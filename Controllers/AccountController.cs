@@ -28,7 +28,17 @@ public class AccountController : Controller
         ViewData["ReturnUrl"] = SafeReturnUrl(returnUrl);
         username = (username ?? "").Trim();
 
-        var userId = _db.ValidateUser(username, password ?? "");
+        string? userId;
+        try
+        {
+            userId = _db.ValidateUser(username, password ?? "");
+        }
+        catch
+        {
+            ViewData["Error"] = "登录失败，请稍后重试";
+            ViewData["Username"] = username;
+            return View();
+        }
         if (userId == null)
         {
             ViewData["Error"] = "账号或密码不正确";
@@ -66,9 +76,12 @@ public class AccountController : Controller
             return View();
         }
 
-        if (!_db.CreateUser(username, password!, out var userId))
+        var createResult = _db.CreateUser(username, password!, out var userId);
+        if (createResult != AppDb.CreateUserResult.Success)
         {
-            ViewData["Error"] = "这个账号已被注册，请换一个";
+            ViewData["Error"] = createResult == AppDb.CreateUserResult.Duplicate
+                ? "这个账号已被注册，请换一个"
+                : "注册失败，请稍后重试";
             return View();
         }
 
