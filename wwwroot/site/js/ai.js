@@ -1,0 +1,109 @@
+/* ============ AI 辅助模块 ============
+   用户自带 API Key，支持兼容 OpenAPI 格式的所有大模型服务
+   所有 AI 修改先返回预览 + 变化说明，由用户确认后才落库
+*/
+
+async function aiAvailable() {
+  return !!(DB.settings.aiApiKey && DB.settings.aiBaseUrl);
+}
+
+async function callAI(prompt, system = "你是一个大学生学习助手，回答简洁有条理，中文回复。") {
+  if (!(await aiAvailable())) {
+    throw new Error('AI 未配置，请在设置中填写 API Key 和 Base URL');
+  }
+  // 通过本地服务器时走同源转发（规避 CORS）；直接双击打开文件时才直连
+  const viaProxy = location.protocol !== 'file:';
+  const url = viaProxy
+    ? '/api/ai'
+    : DB.settings.aiBaseUrl.replace(/\/$/, '') + '/chat/completions';
+  const headers = { 'Content-Type': 'application/json' };
+  if (viaProxy) headers['X-AI-Key'] = DB.settings.aiApiKey;
+  else headers['Authorization'] = `Bearer ${DB.settings.aiApiKey}`;
+
+  const body = {
+    model: DB.settings.aiModel || 'glm-4-flash',
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: prompt }
+    ],
+    temperature: 0.7,
+    max_tokens: 1500
+  };
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60000)
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`API 错误 ${res.status}: ${text.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || '';
+  } catch (e) {
+    throw e;
+  }
+}
+
+/* AI 功能：学习视频推荐 */
+async function aiRecommendVideos(keyword) {
+  const resp = await fetch(`/api/video-search?q=${encodeURIComponent(keyword)}`);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || '真实视频搜索失败，请稍后重试');
+  return (data.items || []).map(v => ({
+    title: String(v.title || '').trim(),
+    teacher: String(v.teacher || '').trim(),
+    platform: String(v.platform || 'B站').trim(),
+    url: String(v.url || '').trim(),
+    reason: String(v.reason || '真实搜索结果').trim(),
+    source: 'real',
+    verified: v.verified === true
+  })).filter(v => v.title && v.url && v.verified);
+}
+
+/* AI 功能：单词辅助（词根词缀、例句） */
+async function aiWordHelp(word) {
+  const prompt = `请为考研单词「${word}」补充：1. 词根词缀记忆法 2. 一个考研真题风格的例句 3. 2-3 个同义近义词。简洁中文回复。`;
+  return await callAI(prompt, "你是考研英语辅导老师，擅长词根词缀和真题例句。");
+}
+
+/* AI 功能：学习计划生成 */
+async function aiMakePlan(goal, duration = 7) {
+  const prompt = `请帮我制定一个 ${duration} 天的学习计划，目标是：「${goal}」。
+严格按JSON数组格式返回，不要输出其他内容：
+[
+  {"day":1,"task":"今天的具体任务","time":"建议时长(如2小时)","priority":"high/medium/low"}
+]`;
+  const raw = await callAI(prompt, "你是学习规划师，擅长把大目标拆解为每天可执行的小任务。只输出JSON。");
+  try {
+    let text = raw.trim();
+    if (text.startsWith('```')) text = text.replace(/^```[a-z]*\n/, '').replace(/\n```$/, '');
+    return JSON.parse(text);
+  } catch (e) {
+    return raw;
+  }
+}
+
+/* AI 功能：收集箱去向建议 */
+async function aiSuggestInbox(inboxContent) {
+  const prompt = `我在收集箱里有一条内容：「${inboxContent}」。请建议应该放到哪个模块：
+1. 考研单词本（如果是单词相关）
+2. 代码练习（如果是编程任务）
+3. 学习计划（如果是长期任务）
+4. 视频库（如果是视频推荐）
+5. 笔记（如果是资料/链接）
+6. 记账（如果是消费相关）
+7. 新闻（如果是新闻/热点）
+只输出模块编号和一句理由，格式如："2 | 这是编程练习任务"`;
+  return await callAI(prompt, "你是学习工作台助手，帮助用户把内容分类到正确的模块。");
+}
+
+/* AI 功能：消费分析 */
+async function aiAnalyzeFinance(summary) {
+  const prompt = `我的本月消费情况：收入${summary.income}元，总支出${summary.expense}元，预算${summary.budget}元。
+按类别支出：${JSON.stringify(summary.catExpense)}。
+请给我3条具体的消费建议（中文，每条一句话）。`;
+  return await callAI(prompt, "你是大学生理财顾问，建议具体务实。");
+}

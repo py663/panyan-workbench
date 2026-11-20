@@ -1,0 +1,254 @@
+@model Workbench.Web.Services.TodayPageData
+@using Workbench.Web.Infrastructure
+@using Workbench.Web.Models
+@{
+    Layout = "_DeskLayout";
+    var budgetColor = Model.BudgetPercent >= 100 ? "var(--cinnabar)" : Model.BudgetPercent > 70 ? "var(--ochre)" : "var(--primary-teal)";
+}
+@functions {
+    private string HelpBtn(string text)
+        => "<button class=\"help-btn\" title=\"帮助\">" + Icons.Svg("help")
+           + "<div class=\"help-popover\">" + System.Net.WebUtility.HtmlEncode(text) + "</div></button>";
+
+    private static readonly Dictionary<int, string> Times = new()
+    {
+        [1] = "07:50-08:30", [2] = "08:40-09:20", [3] = "09:35-10:15",
+        [4] = "10:30-11:10", [5] = "11:20-12:00", [6] = "13:30-14:10",
+        [7] = "14:20-15:00", [8] = "15:20-16:00", [9] = "16:10-16:50",
+        [10] = "18:30-19:10", [11] = "19:20-20:00", [12] = "20:10-20:50"
+    };
+
+    private string CourseTime(CourseDto c)
+    {
+        var s = Times.TryGetValue(c.periods.FirstOrDefault(), out var a) ? a.Split('-')[0] : "";
+        var e = Times.TryGetValue(c.periods.LastOrDefault(), out var b) ? b.Split('-')[1] : "";
+        return $"{c.periods.FirstOrDefault()}-{c.periods.LastOrDefault()}节 {s}-{e}";
+    }
+
+    private static string TypeLabel(string type) => type switch
+    {
+        "code" => "代码",
+        "homework" => "作业",
+        _ => "计划"
+    };
+
+    private static string TypeTag(string type) => type switch
+    {
+        "code" => "tag-teal",
+        "homework" => "tag-ochre",
+        _ => "tag-azure"
+    };
+
+    private static string F(double value) => value.ToString("0.##");
+
+    private static int DaysOverdue(string today, string? deadline)
+    {
+        if (string.IsNullOrEmpty(deadline)) return 0;
+        if (!DateTime.TryParse(today, out var t) || !DateTime.TryParse(deadline, out var d)) return 0;
+        return (int)Math.Ceiling((t - d).TotalDays);
+    }
+}
+
+<div class="gradient-decor">
+    <h2>@Model.Greeting</h2>
+    <p>@Model.DateText @Model.WeekdayText · 把计划交给清单，把心意留给自己</p>
+</div>
+
+<div class="stat-grid today-stats">
+    <div class="card" style="text-align:center;padding:20px">
+        <div style="font-family:var(--font-serif);font-size:28px;font-weight:600;color:var(--primary-teal)">@Model.ReviewCount</div>
+        <div style="font-size:12px;color:var(--ink-sub)">今日复习词</div>
+    </div>
+    <div class="card" style="text-align:center;padding:20px">
+        <div style="font-family:var(--font-serif);font-size:28px;font-weight:600;color:var(--ochre)">@Model.FreshCount</div>
+        <div style="font-size:12px;color:var(--ink-sub)">今日新词</div>
+    </div>
+    <div class="card" style="text-align:center;padding:20px">
+        <div style="font-family:var(--font-serif);font-size:28px;font-weight:600;color:var(--azure-stone)">@Model.TodayTasks.Count</div>
+        <div style="font-size:12px;color:var(--ink-sub)">今日任务</div>
+    </div>
+    <div class="card" style="text-align:center;padding:20px">
+        <div style="font-family:var(--font-serif);font-size:28px;font-weight:600;color:@(Model.BudgetRemain < 0 ? "var(--cinnabar)" : "var(--primary-teal)")">¥@F(Math.Max(0, Model.BudgetRemain))</div>
+        <div style="font-size:12px;color:var(--ink-sub)">本月剩余预算</div>
+    </div>
+</div>
+
+<div class="main-grid">
+    <div style="display:flex;flex-direction:column;gap:var(--space-md)">
+        @if (Model.Overdue.Count > 0)
+        {
+            <div class="card" style="border-color:var(--cinnabar)">
+                <div class="card-title" style="color:var(--cinnabar)">
+                    @Html.Raw(Icons.Svg("trash")) 超期未完成
+                    @Html.Raw(HelpBtn("这些任务的截止日期已过，请尽快处理。点击任务进入详情，可标记完成或调整时间。"))
+                </div>
+                @foreach (var t in Model.Overdue)
+                {
+                    <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px dashed var(--border-paper-light)">
+                        <span class="tag tag-cinnabar">@TypeLabel(t.type)</span>
+                        <div style="flex:1;cursor:pointer">@t.title</div>
+                        <span style="font-size:12px;color:var(--cinnabar)">已超 @DaysOverdue(Model.DateText, t.deadline) 天</span>
+                    </div>
+                }
+            </div>
+        }
+
+        <div class="card">
+            <div class="card-title">
+                @Html.Raw(Icons.Svg("book")) 单词学习
+                @Html.Raw(HelpBtn("今天需要复习的旧单词和要学的新单词。点击区域进入单词本开始学习。"))
+            </div>
+            <div style="display:flex;gap:var(--space-md)">
+                <a href="/site/index.html#/words" style="flex:1;padding:16px;border:1px solid var(--border-paper-light);border-radius:var(--radius-md);cursor:pointer;text-decoration:none;color:inherit">
+                    <div style="font-size:12px;color:var(--ink-sub);margin-bottom:4px">今日复习</div>
+                    <div style="font-family:var(--font-serif);font-size:24px;font-weight:600;color:var(--primary-teal)">@Model.ReviewCount 个</div>
+                    <div style="font-size:12px;color:var(--ink-light);margin-top:4px">点击进入复习</div>
+                </a>
+                <a href="/site/index.html#/words" style="flex:1;padding:16px;border:1px solid var(--border-paper-light);border-radius:var(--radius-md);cursor:pointer;text-decoration:none;color:inherit">
+                    <div style="font-size:12px;color:var(--ink-sub);margin-bottom:4px">今日新词</div>
+                    <div style="font-family:var(--font-serif);font-size:24px;font-weight:600;color:var(--ochre)">@Model.FreshCount 个</div>
+                    <div style="font-size:12px;color:var(--ink-light);margin-top:4px">共已学 @Model.LearnedCount 个</div>
+                </a>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">
+                @Html.Raw(Icons.Svg("target")) 今日任务
+                @Html.Raw(HelpBtn("今天截止或近两天需要做的事。点任务进入对应模块。"))
+            </div>
+            @if (Model.TodayTasks.Count == 0)
+            {
+                <div class="empty-state">
+                    <h4>今日没有紧急任务</h4>
+                    <p>可以复习单词或看看本周计划</p>
+                </div>
+            }
+            else
+            {
+                @foreach (var t in Model.TodayTasks)
+                {
+                    <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px dashed var(--border-paper-light)">
+                        @if (t.priority == "high")
+                        {
+                            <span style="color:var(--cinnabar)">@Html.Raw(Icons.Svg("star"))</span>
+                        }
+                        <span class="tag @TypeTag(t.type)">@TypeLabel(t.type)</span>
+                        <div style="flex:1;cursor:pointer">@t.title</div>
+                        @if (t.deadline == Model.DateText)
+                        {
+                            <span style="font-size:11px;color:var(--cinnabar);font-weight:500">今日</span>
+                        }
+                        else
+                        {
+                            <span style="font-size:11px;color:var(--ink-light)">@t.deadline</span>
+                        }
+                    </div>
+                }
+                <div style="margin-top:12px;text-align:right">
+                    <a class="btn-secondary" href="/site/index.html#/plan" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px">
+                        查看本周计划 @Html.Raw(Icons.Svg("arrow"))
+                    </a>
+                </div>
+            }
+        </div>
+
+        @if (Model.Upcoming.Count > 0)
+        {
+            <div class="card">
+                <div class="card-title">@Html.Raw(Icons.Svg("calendar")) 本周待办（7天内）</div>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                    @foreach (var t in Model.Upcoming.Take(5))
+                    {
+                        <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--bg-paper-light);border-radius:var(--radius-md)">
+                            <span style="font-size:12px;color:var(--ink-sub);width:80px">@t.deadline</span>
+                            <div style="flex:1;font-size:13px">@t.title</div>
+                            <span class="tag tag-teal">@TypeLabel(t.type)</span>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:var(--space-md)">
+        <div class="card">
+            <div class="card-title">
+                @Html.Raw(Icons.Svg("trend")) 近7天学习
+                @Html.Raw(HelpBtn("近7天的单词学习量统计。"))
+            </div>
+            <div style="display:flex;align-items:flex-end;gap:6px;height:100px;margin-top:8px">
+                @foreach (var h in Model.History)
+                {
+                    var newH = Math.Max(4, h.@new * 80 / Math.Max(1, Model.HistoryMax));
+                    var revH = Math.Max(4, h.review * 80 / Math.Max(1, Model.HistoryMax));
+                    DateTime.TryParse(h.date, out var d);
+                    var label = d == default ? h.date : $"{d.Month}/{d.Day}";
+                    <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">
+                        <div style="display:flex;align-items:flex-end;height:80px;gap:3px">
+                            <div style="width:8px;height:@(newH)px;background:var(--ochre);border-radius:2px"></div>
+                            <div style="width:8px;height:@(revH)px;background:var(--primary-teal);border-radius:2px"></div>
+                        </div>
+                        <span style="font-size:10px;color:var(--ink-light)">@label</span>
+                    </div>
+                }
+            </div>
+            <div style="display:flex;gap:16px;font-size:11px;color:var(--ink-sub);margin-top:8px">
+                <span><span style="display:inline-block;width:10px;height:10px;background:var(--ochre);margin-right:4px;vertical-align:middle;border-radius:2px"></span>新词 @Model.NewTotal</span>
+                <span><span style="display:inline-block;width:10px;height:10px;background:var(--primary-teal);margin-right:4px;vertical-align:middle;border-radius:2px"></span>复习 @Model.ReviewTotal</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">@Html.Raw(Icons.Svg("wallet")) 本月预算</div>
+            <div style="margin:8px 0">
+                <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-sub);margin-bottom:4px">
+                    <span>已支出 ¥@F(Model.Expense)</span>
+                    <span>预算 ¥@F(Model.Budget)</span>
+                </div>
+                <div style="height:8px;background:var(--bg-paper-deep);border-radius:4px;overflow:hidden">
+                    <div style="height:100%;width:@(Model.BudgetPercent)%;background:@budgetColor;border-radius:4px"></div>
+                </div>
+            </div>
+            @if (Model.Categories.Count > 0)
+            {
+                <div style="font-size:12px;color:var(--ink-sub);margin-top:8px">
+                    @string.Join(" · ", Model.Categories.Take(4).Select(c => $"{c.Name} ¥{F(c.Amount)}"))
+                </div>
+            }
+            else
+            {
+                <div style="font-size:12px;color:var(--ink-light);margin-top:8px">本月还没有记录</div>
+            }
+            <a class="btn-secondary" href="/site/index.html#/finance" style="width:100%;margin-top:10px;text-decoration:none;display:inline-flex;justify-content:center;align-items:center;gap:6px">
+                查看明细 @Html.Raw(Icons.Svg("arrow"))
+            </a>
+        </div>
+
+        <div class="card">
+            <div class="card-title">
+                @Html.Raw(Icons.Svg("school")) 今日课程
+                @Html.Raw(HelpBtn("今天要上的课，按节次排序。完整周课表在「课程与作业」页。"))
+            </div>
+            @if (Model.TodayCourses.Count == 0)
+            {
+                <div class="empty-state" style="padding:16px 0"><p>今天没有课</p></div>
+            }
+            else
+            {
+                @foreach (var c in Model.TodayCourses)
+                {
+                    <div style="padding:10px 0;border-bottom:1px dashed var(--border-paper-light)">
+                        <div style="font-weight:500;color:var(--ink-deep)">@c.name</div>
+                        <div style="font-size:12px;color:var(--ink-sub);margin-top:2px">@CourseTime(c) · @c.location</div>
+                    </div>
+                }
+            }
+            <div style="margin-top:10px;text-align:right">
+                <a class="btn-secondary" href="/Dashboard/Timetable" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px">
+                    查看周课表 @Html.Raw(Icons.Svg("arrow"))
+                </a>
+            </div>
+        </div>
+    </div>
+</div>

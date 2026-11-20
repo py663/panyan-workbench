@@ -1,0 +1,207 @@
+@model Workbench.Web.Services.TimetablePageData
+@using Workbench.Web.Infrastructure
+@using Workbench.Web.Models
+@{
+    Layout = "_DeskLayout";
+    var weekDays = new[] { "周一", "周二", "周三", "周四", "周五", "周六", "周日" };
+    var colors = new[] { "#2A7E78", "#2F6E90", "#C9A227", "#B4472F", "#55A9A0", "#7FA8BE" };
+    var maxPeriod = 12;
+    var cell = 44;
+    var todayList = Model.Courses.Where(c => c.day == Model.TodayIndex).ToList();
+    var doneCount = Model.Tasks.Count(t => t.status == "done");
+    var totalCount = Model.Tasks.Count;
+    var percent = totalCount > 0 ? (int)Math.Round(doneCount * 100.0 / totalCount) : 0;
+}
+@functions {
+    private string HelpBtn(string text)
+        => "<button class=\"help-btn\" title=\"帮助\">" + Icons.Svg("help")
+           + "<div class=\"help-popover\">" + System.Net.WebUtility.HtmlEncode(text) + "</div></button>";
+
+    private static readonly Dictionary<int, string> Times = new()
+    {
+        [1] = "07:50-08:30", [2] = "08:40-09:20", [3] = "09:35-10:15",
+        [4] = "10:30-11:10", [5] = "11:20-12:00", [6] = "13:30-14:10",
+        [7] = "14:20-15:00", [8] = "15:20-16:00", [9] = "16:10-16:50",
+        [10] = "18:30-19:10", [11] = "19:20-20:00", [12] = "20:10-20:50"
+    };
+
+    private static string Start(int p) => Times.TryGetValue(p, out var t) ? t.Split('-')[0] : "";
+    private static string End(int p) => Times.TryGetValue(p, out var t) ? t.Split('-')[1] : "";
+}
+
+<div class="gradient-decor">
+    <h2>课程与作业</h2>
+    <p>作业管理 · 课程日程</p>
+</div>
+
+<div class="card" style="margin-bottom:var(--space-lg)">
+    <div class="flex flex-between gap-md" style="margin-bottom:var(--space-md)">
+        <div class="card-title" style="margin:0">
+            @Html.Raw(Icons.Svg("calendar")) 本周课程表
+            @Html.Raw(HelpBtn("这是你的 2026-2027 学年第 1 学期课表，全部为啬园校区。今天有 " + todayList.Count + " 节课。手机上会按天显示为列表；电脑上为周视图网格。"))
+        </div>
+        <span style="font-size:12px;color:var(--ink-sub)">今天 @todayList.Count 节课</span>
+    </div>
+
+    <div class="tt-desktop">
+        <div class="tt-head">
+            <div class="tt-corner">节次</div>
+            @for (var i = 0; i < weekDays.Length; i++)
+            {
+                <div class="tt-day-head @(Model.TodayIndex == i + 1 ? "is-today" : "")">@weekDays[i]</div>
+            }
+        </div>
+        <div class="tt-body">
+            <div class="tt-times">
+                @for (var p = 1; p <= maxPeriod; p++)
+                {
+                    <div class="tt-time-cell" style="height:@(cell)px">
+                        <b>@p</b><span>@Start(p)</span><span>@End(p)</span>
+                    </div>
+                }
+            </div>
+            @for (var i = 0; i < weekDays.Length; i++)
+            {
+                var idx = i + 1;
+                var list = Model.Courses.Where(c => c.day == idx).ToList();
+                <div class="tt-col @(Model.TodayIndex == idx ? "is-today" : "")" style="height:@(maxPeriod * cell)px">
+                    @foreach (var c in list)
+                    {
+                        var s = c.periods.FirstOrDefault();
+                        var e = c.periods.LastOrDefault();
+                        var color = colors[(c.day + s) % colors.Length];
+                        var top = (s - 1) * cell + 2;
+                        var height = (e - s + 1) * cell - 4;
+                        var siblings = list.Where(x => x.periods.FirstOrDefault() == s && x.periods.LastOrDefault() == e).ToList();
+                        var count = Math.Max(1, siblings.Count);
+                        var index = Math.Max(0, siblings.FindIndex(x => x.id == c.id));
+                        var width = $"calc({100.0 / count}% - 4px)";
+                        var left = $"calc(2px + {index * 100.0 / count}%)";
+                        <div class="tt-course" style="top:@(top)px;height:@(height)px;left:@left;width:@width;right:auto;border-left-color:@color;background:@(color + "1f")">
+                            <div class="tt-course-name">@c.name</div>
+                            <div class="tt-course-meta">@c.location</div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="tt-mobile">
+        @for (var i = 0; i < weekDays.Length; i++)
+        {
+            var idx = i + 1;
+            var list = Model.Courses.Where(c => c.day == idx).OrderBy(c => c.periods.FirstOrDefault()).ToList();
+            <div class="ttm-day @(Model.TodayIndex == idx ? "is-today" : "")">
+                <div class="ttm-day-title">@weekDays[i]@(Model.TodayIndex == idx ? " · 今天" : "")<span>@list.Count 节课</span></div>
+                @if (list.Count == 0)
+                {
+                    <div class="ttm-empty">无课</div>
+                }
+                else
+                {
+                    @foreach (var c in list)
+                    {
+                        var s = c.periods.FirstOrDefault();
+                        var e = c.periods.LastOrDefault();
+                        <div class="ttm-course">
+                            <div class="ttm-time">@s-@e 节<br><span>@Start(s)-@End(e)</span></div>
+                            <div class="ttm-info">
+                                <div class="ttm-name">@c.name</div>
+                                <div class="ttm-meta">@c.location</div>
+                            </div>
+                        </div>
+                    }
+                }
+            </div>
+        }
+    </div>
+</div>
+
+<div class="stat-grid">
+    <div class="card" style="text-align:center;padding:20px">
+        <div style="font-family:var(--font-serif);font-size:28px;font-weight:600;color:var(--primary-teal)">@percent%</div>
+        <div style="font-size:12px;color:var(--ink-sub)">完成率</div>
+    </div>
+    <div class="card" style="text-align:center;padding:20px">
+        <div style="font-family:var(--font-serif);font-size:28px;font-weight:600;color:var(--azure-stone)">@doneCount / @totalCount</div>
+        <div style="font-size:12px;color:var(--ink-sub)">已完成</div>
+    </div>
+    <div class="card" style="text-align:center;padding:20px">
+        <div style="font-family:var(--font-serif);font-size:28px;font-weight:600;color:var(--ochre)">@Model.Tasks.Count(t => t.priority == "high")</div>
+        <div style="font-size:12px;color:var(--ink-sub)">高优先级</div>
+    </div>
+</div>
+
+<div class="flex flex-between gap-md" style="margin-bottom:var(--space-md)">
+    <div class="card-title" style="margin:0">
+        任务列表
+        @Html.Raw(HelpBtn("课程与作业模块。上方是本周课表，下方是作业列表，超期会在今日页高亮提示。"))
+    </div>
+    <a class="btn-primary" href="/site/index.html#/homework" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px">
+        @Html.Raw(Icons.Svg("plus")) 新建
+    </a>
+</div>
+
+@if (Model.Tasks.Count == 0)
+{
+    <div class="card">
+        <div class="empty-state">
+            <h4>还没有任何任务</h4>
+            <p>点击「新建」开始添加</p>
+        </div>
+    </div>
+}
+else
+{
+    <div class="card" style="padding:0">
+        @foreach (var t in Model.Tasks)
+        {
+            <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border-paper-light);@(t.status == "done" ? "opacity:0.5" : "")">
+                <input type="checkbox" checked="@(t.status == "done")" onchange="toggleTask('@t.id')" style="width:16px;height:16px;accent-color:var(--primary-teal)">
+                <div style="flex:1">
+                    <div style="font-size:14px;@(t.status == "done" ? "text-decoration:line-through" : "")">@t.title</div>
+                    <div style="font-size:11px;color:var(--ink-light);margin-top:2px">
+                        @(string.IsNullOrEmpty(t.deadline) ? "" : $"截止 {t.deadline}")
+                        @if (t.tags.Count > 0)
+                        {
+                            <text> · </text>
+                            @foreach (var tag in t.tags)
+                            {
+                                <span class="tag">@tag</span>
+                            }
+                        }
+                    </div>
+                </div>
+                <span class="tag @(t.priority == "high" ? "tag-cinnabar" : t.priority == "medium" ? "tag-ochre" : "tag-teal")">
+                    @(t.priority == "high" ? "高" : t.priority == "medium" ? "中" : "低")
+                </span>
+                <a class="btn-secondary" href="/site/index.html#/homework" style="padding:4px 8px;text-decoration:none;display:inline-flex">@Html.Raw(Icons.Svg("eye"))</a>
+            </div>
+        }
+    </div>
+}
+
+<script>
+    async function toggleTask(id) {
+        try {
+            var res = await fetch('/api/data');
+            if (!res.ok) throw new Error('读取失败');
+            var all = await res.json();
+            var tasks = (all.modules && all.modules.tasks) || [];
+            var task = tasks.find(function (x) { return x.id === id; });
+            if (!task) return;
+            task.status = task.status === 'done' ? 'todo' : 'done';
+            var put = await fetch('/api/data/tasks', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ version: (all.versions && all.versions.tasks) || 0, data: tasks })
+            });
+            if (!put.ok) throw new Error(put.status === 409 ? '数据已在其他设备修改，请刷新后再试' : '保存失败');
+            location.reload();
+        } catch (e) {
+            alert('保存失败：' + e.message);
+            location.reload();
+        }
+    }
+</script>

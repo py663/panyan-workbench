@@ -1,0 +1,152 @@
+@using Workbench.Web.Infrastructure
+@{
+    var active = (string?)ViewData["Active"];
+    var inboxBadge = Convert.ToString(ViewData["InboxCount"] ?? "") ?? "";
+    var linksBadge = Convert.ToString(ViewData["LinksCount"] ?? "") ?? "";
+
+    var sections = new List<NavSection>
+    {
+        new()
+        {
+            Label = "核心",
+            Items = new List<NavItem>
+            {
+                new() { Key = "today", Icon = "today", Text = "今日总览", Href = "/Dashboard" },
+                new() { Key = "words", Icon = "book", Text = "考研单词本", Href = "/site/index.html#/words" },
+                new() { Key = "code", Icon = "code", Text = "代码练习", Href = "/site/index.html#/code" },
+                new() { Key = "homework", Icon = "school", Text = "课程与作业", Href = "/Dashboard/Timetable" },
+                new() { Key = "plan", Icon = "target", Text = "学习计划", Href = "/site/index.html#/plan" }
+            }
+        },
+        new()
+        {
+            Label = "辅助",
+            Items = new List<NavItem>
+            {
+                new() { Key = "links", Icon = "link", Text = "常用链接", Href = "/site/index.html#/links", Badge = linksBadge },
+                new() { Key = "videos", Icon = "video", Text = "学习视频库", Href = "/site/index.html#/videos" },
+                new() { Key = "finance", Icon = "wallet", Text = "记账", Href = "/site/index.html#/finance" },
+                new() { Key = "news", Icon = "news", Text = "新闻热点", Href = "/site/index.html#/news" },
+                new() { Key = "inbox", Icon = "inbox", Text = "收集箱", Href = "/site/index.html#/inbox", Badge = inboxBadge }
+            }
+        },
+        new()
+        {
+            Label = "公共",
+            Items = new List<NavItem>
+            {
+                new() { Key = "search", Icon = "search", Text = "全局搜索", Href = "/site/index.html#/search" },
+                new() { Key = "ai", Icon = "sparkles", Text = "AI 帮手", Href = "/site/index.html#/ai" },
+                new() { Key = "settings", Icon = "settings", Text = "设置与数据", Href = "/site/index.html#/settings" }
+            }
+        }
+    };
+}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#2F4A3A">
+    <title>@ViewData["TopTitle"] · 潘琰工作台</title>
+    <link rel="stylesheet" href="/site/css/style.css?v=41">
+</head>
+<body>
+    <div class="ink-bg" aria-hidden="true"></div>
+    <div class="app">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">
+                    <div class="seal">潘</div>
+                    <div>
+                        <div class="brand-cn">潘琰工作台</div>
+                        <div class="sidebar-logo-sub">PAN YAN · STUDY DESK</div>
+                    </div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                @foreach (var section in sections)
+                {
+                    <div class="nav-section-label">@(section.Label)</div>
+                    foreach (var item in section.Items)
+                    {
+                        <a class="nav-item @(active == item.Key ? "active" : "")" href="@item.Href" style="text-decoration:none">
+                            @Html.Raw(Icons.Svg(item.Icon))
+                            <span>@item.Text</span>
+                            @if (!string.IsNullOrEmpty(item.Badge) && item.Badge != "0")
+                            {
+                                <span class="nav-badge">@item.Badge</span>
+                            }
+                        </a>
+                    }
+                }
+            </nav>
+            <div class="sidebar-footer">
+                潘琰 · 云端数据 · v2.1
+            </div>
+        </aside>
+
+        <div class="main">
+            <header class="topbar">
+                <div class="topbar-title">@ViewData["TopTitle"]</div>
+                <div class="topbar-actions">
+                    <a class="btn-secondary" href="/site/index.html#/search" title="全局搜索"
+                       style="padding:6px 12px;font-size:13px;display:inline-flex;align-items:center;gap:6px;text-decoration:none">
+                        @Html.Raw(Icons.Svg("search"))
+                        搜索
+                    </a>
+                </div>
+            </header>
+            <main class="page">
+                @RenderBody()
+            </main>
+        </div>
+    </div>
+
+    <nav class="bottomnav">
+        <div class="bottomnav-items">
+            <a class="bottomnav-item @(active == "today" ? "active" : "")" href="/Dashboard" style="text-decoration:none">
+                @Html.Raw(Icons.Svg("today"))<span>今日</span>
+            </a>
+            <a class="bottomnav-item" href="/site/index.html#/words" style="text-decoration:none">
+                @Html.Raw(Icons.Svg("book"))<span>单词</span>
+            </a>
+            <a class="bottomnav-item" href="/site/index.html#/inbox" style="text-decoration:none">
+                @Html.Raw(Icons.Svg("plus"))<span>添加</span>
+            </a>
+            <button class="bottomnav-item" type="button" onclick="toggleDrawer()">
+                @Html.Raw(Icons.Svg("more"))<span>更多</span>
+            </button>
+        </div>
+    </nav>
+
+    <div class="mobile-menu-backdrop" id="deskBackdrop" onclick="toggleDrawer()"></div>
+    <div class="mobile-menu-drawer" id="deskDrawer">
+        <div style="padding:16px 18px;border-bottom:1px solid rgba(212,207,191,0.15)">
+            <div class="sidebar-logo"><div class="seal">潘</div>潘琰工作台</div>
+        </div>
+        <div style="padding:8px 0">
+            @foreach (var section in sections)
+            {
+                <div class="nav-section-label">@(section.Label)</div>
+                foreach (var item in section.Items)
+                {
+                    <a class="nav-item" href="@item.Href" style="text-decoration:none">
+                        @Html.Raw(Icons.Svg(item.Icon))<span>@item.Text</span>
+                    </a>
+                }
+            }
+        </div>
+    </div>
+
+    <script>
+        function toggleDrawer() {
+            var b = document.getElementById('deskBackdrop');
+            var d = document.getElementById('deskDrawer');
+            if (!b || !d) return;
+            b.classList.toggle('open');
+            d.classList.toggle('open');
+        }
+    </script>
+</body>
+</html>
