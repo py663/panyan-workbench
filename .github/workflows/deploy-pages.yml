@@ -3,6 +3,9 @@ name: Deploy workbench to GitHub Pages
 on:
   push:
     branches: [main]
+    # 数据同步产生的 workbench-data.json 变化不必重建站点
+    paths-ignore:
+      - 'workbench-data.json'
   workflow_dispatch:
 
 permissions:
