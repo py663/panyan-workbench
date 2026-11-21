@@ -1,8 +1,8 @@
-/* ============ 云端同步层 ============
-   数据以服务器 SQLite 为准，本机 LocalStorage 只作为断网时的缓存。
-   保存失败不会假装成功；两台设备同时修改会提示选择保留哪一份。
+/* ============ Supabase REST 同步层（GitHub Pages 静态版） ============
+   localStorage 是即时缓存，Supabase 是权威数据源。
+   未配置或连接失败时自动退回纯本机模式，页面照常可用。
+   两个模块用 version 做乐观锁；冲突时让用户选择保留哪一份，不静默覆盖。
 */
-
 const SYNC_MODULES = ['words', 'tasks', 'courses', 'videos', 'inbox', 'notes', 'finance', 'links', 'settings', 'stats'];
 const MODULE_NAMES = {
   words: '考研单词', tasks: '任务', courses: '课程表', videos: '视频库',
@@ -14,14 +14,48 @@ const API_VERSIONS = {};
 const SNAPSHOT = {};
 const DIRTY = new Set();
 let LAST_SAVED = null;
-let IS_ONLINE = true;
 let SERVER_READY = false;
-let ACCOUNT_NAME = '';
+let LOCAL_ONLY = true;
 let flushTimer = null;
 let flushing = false;
 
+const SUPABASE = window.DEFAULT_SUPABASE_CONFIG || {};
+const SB_URL = String(SUPABASE.url || '').replace(/\/$/, '');
+const SB_KEY = SUPABASE.anonKey || '';
+const SB_ACCOUNT = SUPABASE.accountName || '共享账号';
+
+function sbConfigured() {
+  return SUPABASE.enabled === true && /^https:\/\//.test(SB_URL) && SB_KEY.length > 20;
+}
+
+async function sbRequest(path, options = {}) {
+  const headers = {
+    apikey: SB_KEY,
+    Authorization: 'Bearer ' + SB_KEY,
+    'Content-Type': 'application/json',
+    Prefer: 'return=representation',
+    ...(options.headers || {})
+  };
+  const res = await fetch(SB_URL + path, {
+    method: options.method || 'GET',
+    headers,
+    body: options.body,
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const err = await res.json();
+      detail = err.message || err.hint || '';
+    } catch (e) { /* ignore */ }
+    throw new Error('Supabase HTTP ' + res.status + (detail ? '：' + detail : ''));
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
 function saveLocal() {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch (e) { }
+  try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch (e) { /* 容量满时忽略 */ }
 }
 
 function snapshotAll() {
@@ -29,38 +63,44 @@ function snapshotAll() {
 }
 
 async function initDB() {
-  // 先用本机缓存保证页面能立刻显示
+  // 先显示本机缓存，保证页面立刻可用
   loadDB();
-  try {
-    const resp = await fetch('/api/data', { headers: { Accept: 'application/json' } });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const payload = await resp.json();
-    const defaults = defaultData();
+  const defaults = defaultData();
 
-    SYNC_MODULES.forEach(m => {
-      const remote = payload.modules ? payload.modules[m] : undefined;
-      if (remote !== undefined && remote !== null) DB[m] = remote;
-      else DB[m] = defaults[m] ?? (m === 'settings' || m === 'stats' ? defaults[m] : []);
-      API_VERSIONS[m] = payload.versions && payload.versions[m] ? payload.versions[m] : 0;
-    });
-
+  if (!sbConfigured()) {
+    SYNC_MODULES.forEach(m => { if (DB[m] === undefined) DB[m] = defaults[m]; });
     DB.settings = Object.assign({}, defaults.settings, DB.settings || {});
     DB.stats = Object.assign({}, defaults.stats, DB.stats || {});
-    DB.createdAt = DB.createdAt || Date.now();
+    snapshotAll();
+    saveLocal();
+    SERVER_READY = false;
+    LOCAL_ONLY = true;
+    updateStatus('local');
+    return;
+  }
 
+  try {
+    const rows = await sbRequest('/rest/v1/workbench_pages?select=module,data,version') || [];
+    const byModule = {};
+    (Array.isArray(rows) ? rows : []).forEach(r => { byModule[r.module] = r; });
+
+    SYNC_MODULES.forEach(m => {
+      const row = byModule[m];
+      if (row && row.data !== null && row.data !== undefined) DB[m] = row.data;
+      else if (DB[m] === undefined) DB[m] = defaults[m] ?? [];
+      API_VERSIONS[m] = row ? (Number(row.version) || 0) : 0;
+    });
+    DB.settings = Object.assign({}, defaults.settings, DB.settings || {});
+    DB.stats = Object.assign({}, defaults.stats, DB.stats || {});
     snapshotAll();
     saveLocal();
     SERVER_READY = true;
-    setOnline(true);
+    LOCAL_ONLY = false;
     updateStatus('saved');
-
-    try {
-      const me = await fetch('/api/me').then(r => r.ok ? r.json() : null);
-      if (me) ACCOUNT_NAME = me.username || '';
-    } catch (e) { }
   } catch (e) {
+    console.warn('Supabase 连接失败，使用本机数据：', e);
     SERVER_READY = false;
-    setOnline(false);
+    LOCAL_ONLY = true;
     updateStatus('offline');
   }
 }
@@ -69,19 +109,12 @@ async function initDB() {
 function saveDB() {
   saveLocal();
   if (!SERVER_READY) return;
-
   let changed = false;
   SYNC_MODULES.forEach(m => {
     const now = JSON.stringify(DB[m] ?? null);
-    if (now !== SNAPSHOT[m]) {
-      DIRTY.add(m);
-      changed = true;
-    }
+    if (now !== SNAPSHOT[m]) { DIRTY.add(m); changed = true; }
   });
-  if (changed) {
-    updateStatus('saving');
-    scheduleFlush();
-  }
+  if (changed) { updateStatus('saving'); scheduleFlush(); }
 }
 
 function scheduleFlush() {
@@ -96,33 +129,37 @@ async function flush() {
     while (DIRTY.size > 0) {
       const module = DIRTY.values().next().value;
       DIRTY.delete(module);
-      const body = JSON.stringify({ version: API_VERSIONS[module] || 0, data: DB[module] ?? [] });
-
+      const expected = API_VERSIONS[module] || 0;
       try {
-        const resp = await fetch('/api/data/' + module, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body
-        });
-
-        if (resp.status === 409) {
-          const info = await resp.json();
-          handleConflict(module, info);
+        const current = await sbRequest(
+          '/rest/v1/workbench_pages?select=version,data&module=eq.' + encodeURIComponent(module)
+        );
+        const remote = Array.isArray(current) && current.length ? current[0] : null;
+        if (remote && (Number(remote.version) || 0) !== expected) {
+          handleConflict(module, { version: Number(remote.version) || 0, data: remote.data });
           continue;
         }
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
 
-        const result = await resp.json();
-        API_VERSIONS[module] = result.version;
+        const payload = {
+          module: module,
+          data: DB[module] ?? [],
+          version: expected + 1,
+          updated_at: new Date().toISOString()
+        };
+        await sbRequest('/rest/v1/workbench_pages?on_conflict=module', {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+          body: JSON.stringify(payload)
+        });
+
+        API_VERSIONS[module] = expected + 1;
         SNAPSHOT[module] = JSON.stringify(DB[module] ?? null);
         LAST_SAVED = new Date();
-        setOnline(true);
         updateStatus('saved');
       } catch (e) {
-        // 网络失败：保留待同步标记，明确告诉用户没有保存成功
         DIRTY.add(module);
-        setOnline(false);
         updateStatus('offline');
+        console.warn('同步失败，稍后重试：', e);
         break;
       }
     }
@@ -133,21 +170,17 @@ async function flush() {
 
 function handleConflict(module, info) {
   const name = MODULE_NAMES[module] || module;
+  const preview = escapeForModal(JSON.stringify(info.data, null, 1)).slice(0, 1200);
   const html = `
-    <p style="margin:0 0 10px">「${name}」在另一台设备上已经被修改，服务器上的新版本时间更晚。</p>
-    <p style="margin:0 0 6px;font-size:12px;color:var(--ink-sub)">如果直接覆盖，会丢掉另一台设备的改动。</p>
-    <div style="max-height:160px;overflow:auto;background:var(--paper-2,#f5f2e8);padding:10px;border-radius:6px;font-size:12px;white-space:pre-wrap">${escapeForModal(JSON.stringify(info.data, null, 1)).slice(0, 1200)}</div>
-    <p style="margin:12px 0 0;font-size:12px;color:var(--ink-sub)">选择要保留的版本：</p>`;
-
+    <p>「${name}」在另一台设备上已经被修改，服务器版本时间更晚。</p>
+    <p>如果直接覆盖，会丢掉另一台设备的改动。</p>
+    <pre style="max-height:200px;overflow:auto;background:#f4f6f2;padding:8px;border-radius:6px">${preview}</pre>
+    <p>选择要保留的版本：</p>`;
   if (typeof modal === 'function') {
     modal(html, [
       {
         txt: '保留我的', cls: 'btn-secondary', act: 'mine',
-        onClick: () => {
-          API_VERSIONS[module] = info.version;
-          DIRTY.add(module);
-          scheduleFlush();
-        }
+        onClick: () => { API_VERSIONS[module] = info.version; DIRTY.add(module); scheduleFlush(); }
       },
       {
         txt: '用服务器的', cls: 'btn-primary', act: 'theirs',
@@ -157,13 +190,12 @@ function handleConflict(module, info) {
           API_VERSIONS[module] = info.version;
           saveLocal();
           if (typeof renderCurrent === 'function') renderCurrent();
-          toast('已改用服务器版本', 'success');
+          if (typeof toast === 'function') toast('已改用服务器版本', 'success');
         }
       }
     ]);
   } else {
-    // 极端情况下退回浏览器确认框
-    const useMine = window.confirm('「' + name + '」在另一台设备被修改。\n确定 = 保留我的版本，取消 = 用服务器的版本');
+    const useMine = window.confirm('「' + name + '」在另一台设备被修改。\n确定 = 保留我的，取消 = 用服务器的');
     if (useMine) {
       API_VERSIONS[module] = info.version;
       DIRTY.add(module);
@@ -180,12 +212,10 @@ function handleConflict(module, info) {
 
 function escapeForModal(text) {
   return String(text)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-function setOnline(value) {
-  IS_ONLINE = value;
 }
 
 function statusChip() {
@@ -198,8 +228,7 @@ function statusChip() {
       'font-size:11px', 'padding:5px 10px', 'border-radius:999px',
       'background:rgba(252,250,243,.92)', 'border:1px solid #d8e2d5',
       'color:#5c6b61', 'box-shadow:0 2px 8px rgba(47,74,58,.08)',
-      'font-family:inherit', 'pointer-events:none', 'transition:opacity .3s',
-      'opacity:.9'
+      'font-family:inherit', 'pointer-events:none', 'transition:opacity .3s', 'opacity:.9'
     ].join(';');
     document.body.appendChild(chip);
   }
@@ -209,23 +238,25 @@ function statusChip() {
 function updateStatus(state) {
   const chip = statusChip();
   if (state === 'saving') {
-    chip.textContent = '正在保存…';
+    chip.textContent = '正在同步到云端…';
     chip.style.color = '#7a877f';
   } else if (state === 'saved') {
     const t = LAST_SAVED || new Date();
-    chip.textContent = '已保存到云端 ' + t.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    chip.textContent = '已同步到云端 ' + t.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     chip.style.color = '#3d6b4a';
+  } else if (state === 'local') {
+    chip.textContent = '本机模式（未配置云端）';
+    chip.style.color = '#7a877f';
   } else if (state === 'offline') {
-    chip.textContent = '离线：已存在本机，联网后自动重试';
+    chip.textContent = '离线：已存本机，联网后重试';
     chip.style.color = '#8a5a33';
   } else if (state === 'error') {
-    chip.textContent = '保存失败，请检查网络';
+    chip.textContent = '同步失败，请检查配置';
     chip.style.color = '#8a3d33';
   }
 }
 
 window.addEventListener('online', () => {
-  setOnline(true);
   if (SERVER_READY) {
     SYNC_MODULES.forEach(m => {
       if (JSON.stringify(DB[m] ?? null) !== SNAPSHOT[m]) DIRTY.add(m);
@@ -234,47 +265,40 @@ window.addEventListener('online', () => {
     else updateStatus('saved');
   }
 });
+window.addEventListener('offline', () => { if (!LOCAL_ONLY) updateStatus('offline'); });
 
-window.addEventListener('offline', () => {
-  setOnline(false);
-  updateStatus('offline');
-});
-
-/* ---------- 设置页：账号、同步、退出 ---------- */
+/* ---------- 设置页：账号与同步状态 ---------- */
 function injectAccountCard() {
   if (!location.hash.includes('settings')) return;
   const page = document.querySelector('.page');
   if (!page || document.getElementById('wb-account-card')) return;
-
   const card = document.createElement('div');
   card.id = 'wb-account-card';
   card.className = 'card';
   card.style.marginBottom = 'var(--space-md)';
   card.innerHTML = `
-    <div class="card-title">账号与同步</div>
-    <div style="font-size:13px;line-height:2">
-      <div>当前账号：<b>${escapeForModal(ACCOUNT_NAME || '（未读取）')}</b></div>
-      <div>数据位置：服务器 SQLite 数据库</div>
-      <div>最近保存：<span id="wb-last-saved">${LAST_SAVED ? LAST_SAVED.toLocaleString('zh-CN') : '尚未保存'}</span></div>
-      <div>网络状态：<span id="wb-net-state">${IS_ONLINE ? '在线' : '离线'}</span></div>
-    </div>
-    <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
-      <button class="btn-secondary" id="wb-sync-now">立即同步</button>
-      <a class="btn-secondary" href="/Account/Logout" style="text-decoration:none;display:inline-flex;align-items:center">退出登录</a>
-    </div>`;
+    <h3>账号与同步</h3>
+    <p>当前账号：${escapeForModal(SB_ACCOUNT)}</p>
+    <p>数据位置：${LOCAL_ONLY ? '当前浏览器（未连接云端）' : 'Supabase PostgreSQL'}</p>
+    <p>最近保存：${LAST_SAVED ? LAST_SAVED.toLocaleString('zh-CN') : '尚未保存'}</p>
+    <p>云端状态：${SERVER_READY ? '已连接' : (sbConfigured() ? '未连接' : '未配置')}</p>
+    <button class="btn-secondary" id="wb-sync-now" type="button">立即同步</button>`;
   page.insertBefore(card, page.firstChild);
 
   const syncBtn = document.getElementById('wb-sync-now');
   if (syncBtn) {
     syncBtn.onclick = () => {
+      if (!SERVER_READY) {
+        if (typeof toast === 'function') toast('云端未连接，请检查 config.js 里的 Supabase 配置');
+        return;
+      }
       SYNC_MODULES.forEach(m => {
         if (JSON.stringify(DB[m] ?? null) !== SNAPSHOT[m]) DIRTY.add(m);
       });
       updateStatus('saving');
       scheduleFlush();
-      toast('正在同步…');
+      if (typeof toast === 'function') toast('正在同步…');
     };
   }
 }
-
 window.addEventListener('hashchange', () => setTimeout(injectAccountCard, 40));

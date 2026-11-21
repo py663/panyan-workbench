@@ -1,7 +1,12 @@
-/* ============ AI 辅助模块 ============
+/* ============ AI 辅助模块（兼容 Pages 静态版） ============
    用户自带 API Key，支持兼容 OpenAPI 格式的所有大模型服务
    所有 AI 修改先返回预览 + 变化说明，由用户确认后才落库
+   静态版没有服务端代理，会尝试直连模型服务（是否允许跨域取决于服务商）
 */
+
+function isStaticPages() {
+  return location.hostname.endsWith('.github.io');
+}
 
 async function aiAvailable() {
   return !!(DB.settings.aiApiKey && DB.settings.aiBaseUrl);
@@ -11,8 +16,8 @@ async function callAI(prompt, system = "你是一个大学生学习助手，回�
   if (!(await aiAvailable())) {
     throw new Error('AI 未配置，请在设置中填写 API Key 和 Base URL');
   }
-  // 通过本地服务器时走同源转发（规避 CORS）；直接双击打开文件时才直连
-  const viaProxy = location.protocol !== 'file:';
+  // 本地/自建服务端走同源代理；GitHub Pages 静态版只能直连模型服务
+  const viaProxy = !isStaticPages() && location.protocol !== 'file:';
   const url = viaProxy
     ? '/api/ai'
     : DB.settings.aiBaseUrl.replace(/\/$/, '') + '/chat/completions';
@@ -43,12 +48,18 @@ async function callAI(prompt, system = "你是一个大学生学习助手，回�
     const data = await res.json();
     return data.choices?.[0]?.message?.content || '';
   } catch (e) {
+    if (isStaticPages()) {
+      throw new Error('静态版 AI 直连失败（通常是服务商不允许跨域）。如需 AI 功能，请改用带服务端的部署方式。' + e.message);
+    }
     throw e;
   }
 }
 
-/* AI 功能：学习视频推荐 */
+/* AI 功能：学习视频推荐（需要服务端搜索代理） */
 async function aiRecommendVideos(keyword) {
+  if (isStaticPages()) {
+    throw new Error('GitHub Pages 静态版不支持服务器视频搜索，请在视频库手动添加');
+  }
   const resp = await fetch(`/api/video-search?q=${encodeURIComponent(keyword)}`);
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || '真实视频搜索失败，请稍后重试');
