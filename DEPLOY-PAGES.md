@@ -1,12 +1,11 @@
 # 潘琰工作台 · GitHub Pages 免费公网部署说明
 
 这套方案发布的是仓库里已有的纯前端 `wwwroot/site`，**不改动原来的 ASP.NET Core MVC 项目**。
-GitHub Pages 只托管静态文件，服务端代码（登录、AI 代理、热点抓取）不会在 Pages 上运行；
-数据改由浏览器直接通过 Supabase REST 读写。
+GitHub Pages 只托管静态文件，服务端代码（登录、AI 代理、热点抓取）不会在 Pages 上运行。
+数据改由浏览器直接通过 **GitHub 仓库**读写：整份数据存成仓库里的一个 JSON 文件，
+用 GitHub Contents API 同步。全程免费、无需实名、不绑卡，而且 `api.github.com` 在国内可直连。
 
 ## 访问地址
-
-部署完成后：
 
 ```
 https://py663.github.io/panyan-workbench/
@@ -14,47 +13,52 @@ https://py663.github.io/panyan-workbench/
 
 手机、平板、其他电脑用浏览器打开即可，不需要信用卡、不需要域名。
 
+## 为什么从 Supabase 换成 GitHub 仓库
+
+Supabase 免费版的项目 API 域名 `*.supabase.co` 在国内网络经常被阻断
+（浏览器报 `ERR_CONNECTION_CLOSED` / `Failed to fetch`），手机流量也一样，
+与配置无关。而 `api.github.com` 在国内稳定可访问，你的 GitHub 账号和仓库也都现成，
+所以用 GitHub 仓库当云端数据库更可靠，且同样完全免费、不绑卡。
+
 ## 你需要做的 4 步
 
-### 1. 在 Supabase 建表
+### 1. 创建一个 GitHub 访问令牌（token）
 
-打开 Supabase 控制台 → 左侧 **SQL Editor** → **New query**，
-把仓库根目录 `supabase-pages-setup.sql` 的全部内容粘进去，点 **Run**。
+打开 <https://github.com/settings/personal-access-tokens/new>，按下面填写：
 
-执行成功后会多出一张 `public.workbench_pages` 表，里面预置 10 个模块行。
-这张表和原 MVC 应用的 `users` / `usermodules` 是分开的，不会互相影响。
+- **Token name**：随便填，比如 `workbench-sync`
+- **Expiration**：建议 90 天（到期后换新即可）
+- **Resource owner**：选 `py663`
+- **Repository access**：选 **Only select repositories**，只勾选 `panyan-workbench`
+- **Permissions → Repository permissions**：找到 **Contents**，设为 **Read and write**
+- 其他权限全部保持默认（No access），**不要**给管理员/删除仓库等权限
 
-### 2. 填写连接信息
+拉到底点 **Generate token**，然后复制生成的 token（`github_pat_` 开头）。
 
-编辑 `wwwroot/site/js/config.js`：
+### 2. 推送代码（config.js 里不要填 token）
 
-```js
-window.DEFAULT_SUPABASE_CONFIG = {
-  enabled: true,
-  url: 'https://你的项目.supabase.co',
-  anonKey: '你的 anon public key',
-  accountName: '潘琰工作台'
-};
-```
-
-- `url` 和 `anonKey` 在 Supabase → **Project Settings → API** 页面获取。
-- 只使用 **anon public** key，**绝对不要**填 `service_role` key。
-- 填完推送后，这个 key 会随前端代码公开。这是「简单共享」模式的固有风险，只放无隐私数据。
-
-### 3. 推送代码
-
-把改动提交推送到 `main` 分支即可，工作流会自动构建发布：
+`config.js` 只需确认仓库信息正确，**token 字段不要写进去**——GitHub 会扫描公开仓库里的 token 并自动吊销它。推送到 `main`，工作流会自动构建：
 
 ```bash
 git add .
-git commit -m "Enable Supabase sync for Pages"
+git commit -m "Switch sync to GitHub repository"
 git push origin main
 ```
 
-### 4. 开启 Pages
+### 3. 确认 Pages 已开启
 
-仓库页面 → **Settings → Pages → Build and deployment → Source**，选择 **GitHub Actions**。
-这一步只需做一次。之后打开 **Actions** 标签，等 `Deploy workbench to GitHub Pages` 变成绿色对勾即可访问。
+仓库页面 → **Settings → Pages → Build and deployment → Source**，选择 **GitHub Actions**（只需一次）。
+之后打开 **Actions** 标签，等 `Deploy workbench to GitHub Pages` 变成绿色对勾即可访问。
+
+### 4. 打开网页，填一次 token
+
+打开 https://py663.github.io/panyan-workbench/ ，会弹出一个输入框：
+- 粘贴第 1 步生成的 token，点 **保存并连接**
+- token 只保存在**这台设备的浏览器**里，不会上传、不会进代码，别人看不到
+- 每台新设备（手机、别的电脑）第一次打开时，各填一次即可
+
+首次连接时会自动在仓库根目录创建 `workbench-data.json`（存你全部数据）。
+之后设置页的「账号与同步」卡片里可以随时点「填写 / 更换令牌」。
 
 ## 工作流做了什么
 
@@ -65,39 +69,55 @@ git push origin main
 3. 用 `actions/upload-pages-artifact` 打包
 4. 用 `actions/deploy-pages` 发布
 
-由于页面使用的是相对路径（`css/style.css`、`js/app.js`），放在 `/panyan-workbench/` 子路径下也能正常加载，无需修改 base 路径。
+由于页面使用相对路径（`css/style.css`、`js/app.js`），放在 `/panyan-workbench/` 子路径下也能正常加载。
+
+注意：数据文件 `workbench-data.json` 在仓库根目录，不在 `wwwroot/site` 里，
+所以不会被发布成网页，只作为数据存取。
 
 ## 数据同步规则
 
 - 浏览器 `localStorage` 是即时缓存，页面打开时先显示本机数据。
-- 随后从 Supabase 拉取云端数据覆盖本机，之后每次修改按模块自动上传（约 0.4 秒防抖）。
-- 每个模块有 `version` 乐观锁；如果另一台设备先改过，会弹窗让你选择「保留我的」或「用服务器的」，不会静默覆盖。
-- 云端不可用时退回本机模式，右下角状态条会明确提示，网络恢复后自动重试。
-- 设置页新增「账号与同步」卡片，可手动点「立即同步」。
+- 随后从 GitHub 仓库拉取云端数据覆盖本机，之后每次修改整份自动上传（约 0.8 秒防抖）。
+- 用文件 `sha` 做乐观锁：如果另一台设备先改过，会弹窗让你选「保留我的」或「用云端的」，不会静默覆盖。
+- 云端不可用时退回本机模式，右下角状态条明确提示，网络恢复后自动重试。
+- 设置页有「账号与同步」卡片，可手动点「立即同步」。
+
+## 安全提醒（重要）
+
+token 只保存在你自己的浏览器里，**不会**写进代码、不会上传到仓库，别人打开网址看不到。
+但为了稳妥，仍然务必：
+
+- 只授权 `panyan-workbench` **这一个**仓库
+- 只给 **Contents: read and write**，不要给其他权限
+- 设置有效期（如 90 天），到期在设置页换新的
+- 只存无隐私的学习数据
+
+**千万不要把 token 填进 config.js**：GitHub 的 Secret scanning 会拦截提交，即使强行提交，token 也会被自动吊销，同步会失效。
+如果怀疑 token 泄露，去 <https://github.com/settings/personal-access-tokens> 撤销它，再生成一个新的，在网页设置页填入即可。
 
 ## 静态版的功能边界
 
-GitHub Pages 没有服务端，以下功能在静态版受限：
+GitHub Pages 没有服务端，以下功能受限：
 
-- **AI 功能**：会尝试用你填写的 API Key 直连模型服务；如果服务商不允许跨域，会给出明确错误。需要 AI 时请用带服务端的部署方式。
-- **热点新闻**：依赖 `/api/news` 服务端抓取，静态版会提示不可用。
-- **真实视频搜索**：依赖 `/api/video-search`，静态版会提示不可用，可以在视频库手动添加。
-- **账号登录**：静态版没有 Cookie 登录，所有人共用一份 Supabase 数据（简单共享模式）。
+- **AI 功能**：会尝试用填写的 API Key 直连模型服务；若服务商不允许跨域会给出错误。
+- **热点新闻**：依赖 `/api/news` 服务端抓取，静态版提示不可用。
+- **真实视频搜索**：依赖 `/api/video-search`，静态版提示不可用，可手动添加。
+- **账号登录**：静态版没有 Cookie 登录，所有人共用一份仓库数据（简单共享模式）。
 
 待办、课程表、单词、笔记、记账、收集箱、常用链接等核心模块全部可用。
 
 ## 重要：仓库必须保持 Public
 
-GitHub Free 套餐下，**私有仓库不能使用 GitHub Pages**。
-所以为了让免费站点持续可访问，请把 `panyan-workbench` 保持为 **Public**。
-如果改回 Private，Pages 站点会停止工作；除非升级到 GitHub Pro/Team。
+GitHub Free 套餐下，**私有仓库不能使用 GitHub Pages**。请保持 `panyan-workbench` 为 **Public**。
+改回 Private 会让 Pages 站点停止工作（除非升级到付费套餐）。
 
-仓库是公开的，请勿在代码或数据里写真实隐私信息（身份证号、手机号、密码、service_role key 等）。
+仓库公开，请勿在代码或数据里写真实隐私信息。
 
 ## 常见排查
 
-- **页面 404**：确认 Settings → Pages 的 Source 是 GitHub Actions，且 Actions 最后一次运行成功。
-- **样式丢失**：检查浏览器地址是否带仓库名 `/panyan-workbench/`，不要用其他路径直接打开 `index.html`。
-- **状态条一直显示「本机模式」**：`config.js` 里 `enabled` 没改成 `true`，或 url / anonKey 填错。
-- **状态条显示「离线」**：Supabase 项目可能暂停了（免费项目长期不用会暂停），到控制台恢复即可。
+- **页面 404**：确认 Settings → Pages 的 Source 是 GitHub Actions，且最后一次 Actions 成功。
+- **样式丢失**：确认地址带仓库名 `/panyan-workbench/`。
+- **状态条「本机模式」**：`config.js` 里 `enabled` 不是 `true`，或 owner/repo/token 填错。
+- **状态条「离线」**：打开浏览器控制台看红色报错。常见是 token 权限不足（401/403）或 token 过期。
+- **状态条「正在同步」卡住**：检查 token 是否过期，或仓库是否改成了 Private。
 - **数据没更新**：浏览器强刷（Ctrl+F5），或看右下角是否显示「已同步到云端」。
