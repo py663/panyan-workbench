@@ -1,0 +1,142 @@
+/* ============ 帮助文档 / 更新日志（按当前真实配置编写） ============
+   本文件在 app.js 之后加载，覆盖 app.js 里遗留的旧版说明与虚构配置。
+   原则：只写真实启用的能力；未启用的能力明确标注"当前未启用"，不编造。
+   真实配置来源：config.js（DEFAULT_GITHUB_CONFIG）+ sync.js（GitHub 仓库同步层）。
+*/
+(function () {
+  'use strict';
+
+  var CFG = window.DEFAULT_GITHUB_CONFIG || {};
+  var OWNER = String(CFG.owner || 'py663').trim();
+  var REPO = String(CFG.repo || 'panyan-workbench').trim();
+  var PATH = String(CFG.path || 'workbench-data.json').trim();
+  var BRANCH = String(CFG.branch || 'main').trim();
+  var ACCOUNT = CFG.accountName || '潘琰工作台';
+  var SITE = 'https://' + OWNER + '.github.io/' + REPO + '/';
+  var REPO_URL = 'https://github.com/' + OWNER + '/' + REPO;
+  var DATA_URL = REPO_URL + '/blob/' + BRANCH + '/' + PATH;
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function row(label, content) {
+    return '<div style="padding:8px 0"><b style="color:var(--ink-deep)">' + esc(label) + '</b><br>' + content + '</div>';
+  }
+  function entry(ver, title, rows) {
+    return '<div style="padding:10px 0;border-bottom:1px dashed var(--border-paper-light)">' +
+      '<div style="font-weight:600;color:var(--ink-deep)">' + esc(ver) + ' · ' + esc(title) + '</div>' +
+      '<div style="margin-top:6px;color:var(--ink-main);line-height:1.9">' + rows + '</div></div>';
+  }
+
+  /* ---------- 覆盖：使用说明 ---------- */
+  window.showHelpTab = function showHelpTab() {
+    var t = document.getElementById('helpTab');
+    if (!t) return;
+    t.style.display = t.style.display === 'none' ? 'block' : 'none';
+    t.innerHTML = [
+      row('工作台是什么？',
+        '一个专为你打造的个人学习工作台。网页本身是免费托管的静态站点，数据通过 GitHub 仓库在电脑、手机、平板之间自动同步。' +
+        '同一个网址 ' + esc(SITE) + '，任何设备打开都能看到同一份数据。'),
+
+      row('包含哪些模块？',
+        '① 今日总览：聚合所有模块的紧急事项<br>' +
+        '② 考研单词本：每天自动安排复习 + 新词，SM-2 间隔重复算法<br>' +
+        '③ 代码练习 / 课程作业 / 学习计划：统一任务管理<br>' +
+        '④ 学习视频库：收藏视频（真实搜索当前未启用，见下方）<br>' +
+        '⑤ 记账：收支记录 + 分类统计 + 预算<br>' +
+        '⑥ 新闻热点：当前未启用（依赖服务端，静态版不可用）<br>' +
+        '⑦ 收集箱：临时内容暂存<br>' +
+        '⑧ 全局搜索：跨所有模块搜索<br>' +
+        '⑨ AI 帮手：计划生成 / 消费建议 / 单词辅助<br>' +
+        '⑩ 设置与数据：账号与同步、数据管理、使用说明、更新日志'),
+
+      row('账号和访问方式',
+        '当前未启用注册 / 登录账号系统，采用<b>简单共享模式</b>：所有设备共用同一份仓库数据。' +
+        '访问凭据是一个 GitHub 访问令牌（token），每台设备首次打开网页时填一次，只保存在这台设备的浏览器里，不会上传、也不会写进代码。' +
+        '当前账号名：<b>' + esc(ACCOUNT) + '</b>。'),
+
+      row('数据保存在哪里？',
+        '权威数据保存在你自己的 GitHub 仓库文件 <a href="' + esc(DATA_URL) + '" target="_blank" rel="noopener">' + esc(OWNER + '/' + REPO + '/' + PATH) + '</a>（' + esc(BRANCH) + ' 分支）。' +
+        '浏览器 localStorage 只是本机即时缓存，用于断网时照常使用；它不是云端数据，最终会被云端覆盖。' +
+        '设置页「账号与同步」卡片里可以看到当前连接状态、数据位置和最近保存时间。'),
+
+      row('自动保存与跨设备同步',
+        '新增 / 修改内容后约 0.8 秒自动保存：先写本机，再整份上传到 GitHub 仓库。' +
+        '右下角状态条会显示「正在同步到 GitHub…」→「已同步到云端 时:分」。' +
+        '另一台设备打开同一网址、填入同一个 token，即可看到最新数据。' +
+        '断网时会提示「离线：已存本机」，联网后自动重试。' +
+        '如果两台设备同时修改，会弹出冲突窗口让你选择「保留我的」或「用云端的」，不会静默覆盖。'),
+
+      row('导出、备份与恢复',
+        '「设置 → 数据管理 → 导出全部数据（JSON）」可把全部数据下载为备份文件；' +
+        '「从 JSON 文件导入」可恢复。<b>注意：导入会直接覆盖当前数据，操作前请先导出一份备份。</b><br>' +
+        '<b>当前未启用</b>：单模块导出、备份时间点列表、一键恢复、导入前预览、数据迁移检查、删除回收站。' +
+        '删除操作目前不可恢复，请谨慎。'),
+
+      row('AI 服务与 API',
+        'AI 功能使用你配置的模型 API（默认智谱 GLM，可在设置里更换模型和 API Key）。' +
+        'API Key 只保存在本机浏览器，不写进代码、不进仓库。' +
+        '静态站点受浏览器跨域限制，部分模型服务可能无法直连；此时会给出错误提示，不会假装成功。'),
+
+      row('费用与付费风险',
+        '网页托管（GitHub Pages）、GitHub 仓库、同步用的 API、访问令牌：<b>全部免费，未绑定信用卡</b>。<br>' +
+        'AI 模型 API：费用由你所选服务商决定，很多提供免费额度；不用 AI 则零费用。<br>' +
+        '当前没有使用任何付费服务。'),
+
+      row('部署 / 运行方式',
+        '仓库 <a href="' + esc(REPO_URL) + '" target="_blank" rel="noopener">' + esc(OWNER + '/' + REPO) + '</a> 推送到 ' + esc(BRANCH) + ' 分支后，' +
+        '由 GitHub Actions 自动把 wwwroot/site 发布到 GitHub Pages，得到上面的网址。' +
+        'GitHub Free 下 Pages 要求仓库保持 <b>Public</b>；改成 Private 站点会停止工作。' +
+        '旧的 Vercel / Render / 本地 server.py 方案当前未启用。'),
+
+      row('做不到的 / 当前未启用的',
+        '· 注册登录与多账号隔离（当前为简单共享模式）<br>' +
+        '· 删除回收站与恢复（当前删除不可恢复）<br>' +
+        '· 单模块导出、备份时间点管理、导入预览、迁移检查<br>' +
+        '· 新闻热点实时抓取、服务端视频搜索、服务端 AI 代理（静态站无服务端）<br>' +
+        '· 大文件 / 附件存储（收集箱只适合文字和小链接）<br>' +
+        '· 语音朗读'),
+      ''
+    ].join('');
+  };
+
+  /* ---------- 覆盖：更新日志 ---------- */
+  window.showChangelogTab = function showChangelogTab() {
+    var t = document.getElementById('changelogTab');
+    if (!t) return;
+    t.style.display = t.style.display === 'none' ? 'block' : 'none';
+    t.innerHTML = [
+      entry('v2.1', '2026-11-21 · 云端同步改为 GitHub 仓库 + 修正文档',
+        '<b>修改内容</b>：把云端数据库从 Supabase 改为本仓库的 ' + esc(PATH) + '（Supabase 的 API 域名在国内网络被阻断）；' +
+        '访问令牌改为运行时填写、只存本机浏览器，不再写进代码；新增右下角同步状态、断网重试与冲突二选一；' +
+        '按真实配置重写「使用说明」与「更新日志」，未启用能力明确标注。<br>' +
+        '<b>影响模块</b>：全站数据层、设置与数据、帮助文档<br>' +
+        '<b>数据变化</b>：数据迁移到仓库 JSON 文件；首次连接时把本机数据作为第一版上传，之后以云端为准<br>' +
+        '<b>用户是否需要操作</b>：每台设备首次打开填一次 GitHub 访问令牌（90 天有效期，到期换新）<br>' +
+        '<b>如何回退 / 恢复</b>：设置里「导出全部数据」可下载 JSON 备份；旧版静态文件仍保留在仓库历史提交中'),
+
+      entry('v1.21', '2026-11-19 · 视频改为真实搜索与链接验证',
+        '<b>修改内容</b>：视频推荐检索真实结果并逐条验证链接可访问，清理虚构示例。<br>' +
+        '<b>影响模块</b>：学习视频库、AI 帮手<br>' +
+        '<b>数据变化</b>：无<br>' +
+        '<b>用户是否需要操作</b>：刷新页面后重新搜索<br>' +
+        '<b>说明</b>：该能力依赖服务端，在当前 GitHub Pages 静态版中未启用'),
+
+      entry('v1.15', '2026-11-19 · 调整报告截止日期',
+        '<b>修改内容</b>：网络地理信息系统实验期末报告截止日期改为 2026-12-09。<br>' +
+        '<b>影响模块</b>：课程与作业、今日任务、全局搜索<br>' +
+        '<b>数据是否变化</b>：课程数据变更<br>' +
+        '<b>用户是否需要操作</b>：刷新页面'),
+
+      entry('v1.10', '2026-11-19 · 古风竹子背景',
+        '<b>修改内容</b>：使用竹子水彩图作为全站背景，加米白蒙版保证文字清晰。<br>' +
+        '<b>影响模块</b>：全站视觉<br><b>数据是否变化</b>：无<br><b>用户是否需要操作</b>：刷新页面'),
+
+      entry('v1.0', '2026-11-18 · 初始版本',
+        '<b>修改内容</b>：完成今日总览、考研单词本、代码练习、课程作业、学习计划、视频库、记账、收集箱、全局搜索、AI 帮手、设置与数据等核心模块，响应式适配电脑 / 平板 / 手机。<br>' +
+        '<b>影响模块</b>：全部<br><b>数据是否变化</b>：初始化示例数据<br><b>用户是否需要操作</b>：无需操作'),
+
+      '<div style="font-size:12px;color:var(--ink-sub);padding-top:8px">说明：更新日志从 v2.1 起按当前真实配置记录日期、版本、修改内容、影响模块、数据变化、是否需要操作与回退方式。更早版本的记录仅作历史参考，其中关于账号 / 服务器 / 数据库 / 部署的描述不适用于当前静态版，已按真实情况更正于「使用说明」。</div>'
+    ].join('');
+  };
+})();
