@@ -1,7 +1,13 @@
-/* ============ GitHub 仓库云同步层（GitHub Pages 静态版） ============
+/* ============ 云端同步层（GitHub 仓库 + 云函数代理） ============
    本机 localStorage 是即时缓存，GitHub 仓库里的一个 JSON 文件是权威数据源。
-   用 GitHub Contents API 读写，整份 DB 存成一个文件，用文件 sha 做乐观锁。
-   冲突时不静默覆盖，让用户选择保留哪一份。
+   用文件 sha 做乐观锁，冲突时不静默覆盖，让用户选择保留哪一份。
+
+   两种通道：
+   1) 代理模式（默认，打开无需 token）：读写都走腾讯云函数，
+      GitHub 令牌只存在云函数环境变量里，浏览器完全接触不到。
+   2) 直连模式（回退）：浏览器直接调 GitHub Contents API，需本机填 token。
+      仅当没配 proxyUrl 或 config.js 里 syncMode='direct' 时启用。
+
    未配置或连接失败时自动退回纯本机模式，页面照常可用。
 */
 const SYNC_MODULES = ['words', 'tasks', 'courses', 'videos', 'inbox', 'notes', 'finance', 'links', 'settings', 'stats', 'trash', 'backups'];
@@ -27,9 +33,15 @@ const GH_BRANCH = String(GH.branch || 'main').trim() || 'main';
 const GH_PATH = String(GH.path || 'workbench-data.json').trim() || 'workbench-data.json';
 const GH_ACCOUNT = GH.accountName || '共享账号';
 const GH_API = 'https://api.github.com';
-const GH_TOKEN_KEY = 'wb_github_token';   // token 保存在本机浏览器，不进代码、不进仓库
+const GH_TOKEN_KEY = 'wb_github_token';   // 仅直连回退模式使用
 
-/* 优先读本机保存的 token；config.js 里若写了也兼容（但不推荐，会被 GitHub 扫描吊销） */
+const PROXY_CONF = window.DEFAULT_PROXY_CONFIG || {};
+const PROXY_URL = String(PROXY_CONF.proxyUrl || '').trim().replace(/\/+$/, '');
+const PROXY_KEY = String(PROXY_CONF.syncKey || '').trim();
+/* 默认走代理；只有显式 syncMode='direct' 且没配 proxyUrl 时才直连 */
+const USE_PROXY = !!PROXY_URL && String(GH.syncMode || '').trim() !== 'direct';
+
+/* ---------- 直连回退模式用的 token ---------- */
 function getToken() {
   try {
     const saved = localStorage.getItem(GH_TOKEN_KEY);
@@ -53,7 +65,7 @@ function ghContentsUrl() {
     + '/contents/' + GH_PATH.split('/').map(encodeURIComponent).join('/');
 }
 
-/* UTF-8 安全的 base64 编解码（数据里含中文，不能直接用 btoa/atob 处理原文） */
+/* UTF-8 安全的 base64 编解码（直连模式下编码整份数据） */
 function utf8ToBase64(str) {
   const bytes = new TextEncoder().encode(str);
   let bin = '';
@@ -66,6 +78,7 @@ function base64ToUtf8(b64) {
   return new TextDecoder().decode(bytes);
 }
 
+/* ---------- 直连 GitHub 请求（回退用） ---------- */
 async function ghRequest(url, options = {}) {
   const headers = {
     Accept: 'application/vnd.github+json',
@@ -83,10 +96,7 @@ async function ghRequest(url, options = {}) {
   });
   if (!res.ok) {
     let detail = '';
-    try {
-      const err = await res.json();
-      detail = err.message || '';
-    } catch (e) { /* ignore */ }
+    try { const err = await res.json(); detail = err.message || ''; } catch (e) { /* ignore */ }
     const error = new Error('GitHub HTTP ' + res.status + (detail ? '：' + detail : ''));
     error.status = res.status;
     throw error;
@@ -95,10 +105,49 @@ async function ghRequest(url, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+/* ---------- 云函数代理请求（默认通道，token 只在服务端） ---------- */
+async function proxyRequest(path, payload) {
+  const isPost = payload !== undefined && payload !== null;
+  let url = PROXY_URL + path;
+  const options = {
+    method: isPost ? 'POST' : 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(20000)
+  };
+  if (isPost) {
+    options.body = JSON.stringify(Object.assign({}, payload, { key: PROXY_KEY }));
+  } else {
+    url += '?key=' + encodeURIComponent(PROXY_KEY) + '&_t=' + Date.now();
+  }
+  const res = await fetch(url, options);
+  const text = await res.text();
+  let out;
+  try { out = text ? JSON.parse(text) : {}; } catch (e) {
+    throw new Error('云函数返回格式异常');
+  }
+  if (!res.ok) {
+    const error = new Error(out.error || ('云函数 HTTP ' + res.status));
+    error.status = res.status;
+    throw error;
+  }
+  return out;
+}
+
 /* 读取云端整份数据。文件不存在返回 null */
 async function ghRead() {
+  if (USE_PROXY) {
+    const out = await proxyRequest('/api/data-get');
+    if (out.ok === false) {
+      const error = new Error(out.error || '云端读取失败');
+      error.status = 500;
+      throw error;
+    }
+    if (out.notFound) return null;
+    return { sha: out.sha, data: out.data };
+  }
+  // 直连回退
   let file;
-  // 加随机参数绕开 GitHub/CDN 的 60 秒缓存，保证跨设备刷新读到最新数据
   const cacheBust = '&_t=' + Date.now();
   try {
     file = await ghRequest(ghContentsUrl() + '?ref=' + encodeURIComponent(GH_BRANCH) + cacheBust);
@@ -120,6 +169,22 @@ async function ghRead() {
 
 /* 写入云端整份数据。首次创建不带 sha，更新必须带 sha（乐观锁） */
 async function ghWrite(data, sha) {
+  if (USE_PROXY) {
+    const out = await proxyRequest('/api/data-save', { data: data, sha: sha || null });
+    if (out.ok === false) {
+      if (out.conflict) {
+        const error = new Error('云端已被其他设备修改');
+        error.status = 409;
+        error.remote = out.remote;
+        throw error;
+      }
+      const error = new Error(out.error || '云端保存失败');
+      error.status = out.status || 500;
+      throw error;
+    }
+    return out.sha || sha;
+  }
+  // 直连回退
   const body = {
     message: '工作台自动同步 ' + new Date().toISOString(),
     content: utf8ToBase64(JSON.stringify({ data: data, updatedAt: new Date().toISOString() })),
@@ -157,11 +222,11 @@ function fillLocalDefaults() {
   saveLocal();
 }
 
-/* 弹出 token 输入框；token 只存本机浏览器，不进代码/仓库 */
+/* 弹出 token 输入框（仅直连回退模式用；代理模式不会调用） */
 function askToken(onDone) {
   const html = `
-    <h3>连接云端同步</h3>
-    <p>首次使用需要填写 GitHub 访问令牌（token）。只需填一次，保存在这台设备的浏览器里，不会上传、别人看不到。</p>
+    <h3>连接云端同步（直连模式）</h3>
+    <p>当前未配置云函数代理，需填写 GitHub 访问令牌（token）。只需填一次，保存在这台设备的浏览器里。</p>
     <p style="font-size:12px;color:#6b7a70">在 GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens 生成，只授权 <b>${escapeForModal(GH_REPO)}</b> 仓库、只给 <b>Contents: read and write</b>。</p>
     <input id="wb-gh-token-input" type="password" placeholder="在这里粘贴你的 token" style="width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid #cfd8d0;border-radius:6px;font-family:inherit;font-size:14px">
     <p style="font-size:12px;color:#8a5a33" id="wb-gh-token-err"></p>`;
@@ -171,10 +236,10 @@ function askToken(onDone) {
     if (val.length < 20) {
       const err = m && m.querySelector ? m.querySelector('#wb-gh-token-err') : null;
       if (err) err.textContent = 'token 看起来不对，请检查后重试';
-      return false; // keep modal open
+      return false;
     }
     setToken(val);
-    if (m && m.remove) m.remove();   // keepOpen 模式下需手动关闭
+    if (m && m.remove) m.remove();
     if (typeof toast === 'function') toast('已保存，正在连接云端…', 'success');
     if (typeof onDone === 'function') onDone();
     return true;
@@ -208,8 +273,8 @@ async function initDB() {
     return;
   }
 
-  // 没有 token：弹窗让用户输入，填完再继续（不阻塞本机数据展示）
-  if (!hasToken()) {
+  // 直连回退模式才需要 token；代理模式直接读云端，打开无需任何输入
+  if (!USE_PROXY && !hasToken()) {
     fillLocalDefaults();
     updateStatus('local');
     askToken(() => { initDB(); });
@@ -228,7 +293,7 @@ async function initDB() {
       DB.settings = Object.assign({}, defaults.settings, DB.settings || {});
       DB.stats = Object.assign({}, defaults.stats, DB.stats || {});
       FILE_SHA = await ghWrite(DB, null);
-      if (typeof toast === 'function') toast('已在 GitHub 仓库创建云端数据文件', 'success');
+      if (typeof toast === 'function') toast('已在云端创建数据文件', 'success');
     }
     snapshotAll();
     saveLocal();
@@ -237,11 +302,16 @@ async function initDB() {
     LAST_SAVED = new Date();
     updateStatus('saved');
   } catch (e) {
-    console.warn('GitHub 云同步连接失败，使用本机数据：', e);
+    console.warn('云同步连接失败，使用本机数据：', e);
     SERVER_READY = false;
     LOCAL_ONLY = true;
-    // token 失效/权限不足：清掉旧 token，让下次重新输入
-    if (e.status === 401 || e.status === 403) {
+    // 代理模式：401/403 表示应用密码不对或云函数没配 token，提示检查配置
+    if (USE_PROXY && (e.status === 401 || e.status === 403)) {
+      updateStatus('error');
+      return;
+    }
+    // 直连模式：token 失效/权限不足，清掉旧 token 让下次重新输入
+    if (!USE_PROXY && (e.status === 401 || e.status === 403)) {
       try { localStorage.removeItem(GH_TOKEN_KEY); } catch (err) { /* ignore */ }
       updateStatus('error');
       askToken(() => { initDB(); });
@@ -282,7 +352,7 @@ async function flush() {
       } catch (e) {
         if (e.status === 409) {
           // sha 不匹配：别的设备刚改过云端
-          const remote = await ghRead();
+          const remote = e.remote || await ghRead();
           handleConflict(remote);
           DIRTY.clear();
           break;
@@ -310,7 +380,6 @@ function handleConflict(remote) {
     <pre style="max-height:200px;overflow:auto;background:#f4f6f2;padding:8px;border-radius:6px">${preview}</pre>
     <p>选择要保留的版本：</p>`;
   const useMine = () => {
-    // 用云端最新的 sha 作为凭据强制覆盖
     FILE_SHA = remote.sha;
     SYNC_MODULES.forEach(m => DIRTY.add(m));
     scheduleFlush();
@@ -363,7 +432,7 @@ function statusChip() {
 function updateStatus(state) {
   const chip = statusChip();
   if (state === 'saving') {
-    chip.textContent = '正在同步到 GitHub…';
+    chip.textContent = '正在同步到云端…';
     chip.style.color = '#7a877f';
   } else if (state === 'saved') {
     const t = LAST_SAVED || new Date();
@@ -376,7 +445,7 @@ function updateStatus(state) {
     chip.textContent = '离线：已存本机，联网后重试';
     chip.style.color = '#8a5a33';
   } else if (state === 'error') {
-    chip.textContent = '同步失败，请检查配置';
+    chip.textContent = USE_PROXY ? '云端连接失败，请检查云函数配置' : '同步失败，请检查配置';
     chip.style.color = '#8a3d33';
   }
 }
@@ -402,18 +471,24 @@ function injectAccountCard() {
   card.className = 'card';
   card.style.marginBottom = 'var(--space-md)';
   const repoLabel = GH_OWNER && GH_REPO ? (GH_OWNER + '/' + GH_REPO) : '未配置';
+  const channelText = USE_PROXY ? '云函数中转（打开无需令牌）' : '浏览器直连 GitHub';
+  const tokenRow = USE_PROXY
+    ? '<p>访问令牌：<b style="color:#3d6b4a">不需要（令牌只在云函数里）</b></p>'
+    : '<p>访问令牌：' + (hasToken() ? '已在本机保存' : '未填写') + '</p>';
+  const resetBtn = USE_PROXY ? '' : '<button class="btn-secondary" id="wb-token-reset" type="button">填写 / 更换令牌</button>';
   card.innerHTML = `
     <h3>账号与同步</h3>
     <p>当前账号：${escapeForModal(GH_ACCOUNT)}</p>
     <p>云端仓库：${escapeForModal(repoLabel)}</p>
     <p>数据文件：${escapeForModal(GH_PATH)}</p>
+    <p>同步通道：${escapeForModal(channelText)}</p>
     <p>数据位置：${LOCAL_ONLY ? '当前浏览器（未连接云端）' : 'GitHub 仓库（免费）'}</p>
-    <p>访问令牌：${hasToken() ? '已在本机保存' : '未填写'}</p>
+    ${tokenRow}
     <p>最近保存：${LAST_SAVED ? LAST_SAVED.toLocaleString('zh-CN') : '尚未保存'}</p>
     <p>云端状态：${SERVER_READY ? '已连接' : (ghConfigured() ? '未连接' : '未配置')}</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-primary" id="wb-sync-now" type="button">立即同步</button>
-      <button class="btn-secondary" id="wb-token-reset" type="button">填写 / 更换令牌</button>
+      ${resetBtn}
     </div>`;
   page.insertBefore(card, page.firstChild);
 
@@ -421,8 +496,8 @@ function injectAccountCard() {
   if (syncBtn) {
     syncBtn.onclick = () => {
       if (!SERVER_READY) {
-        if (!hasToken()) { askToken(() => { initDB(); }); return; }
-        if (typeof toast === 'function') toast('云端未连接，请点「填写 / 更换令牌」重试');
+        if (!USE_PROXY && !hasToken()) { askToken(() => { initDB(); }); return; }
+        if (typeof toast === 'function') toast('云端未连接，请稍后重试或刷新页面');
         return;
       }
       SYNC_MODULES.forEach(m => {
@@ -433,9 +508,9 @@ function injectAccountCard() {
       if (typeof toast === 'function') toast('正在同步…');
     };
   }
-  const resetBtn = document.getElementById('wb-token-reset');
-  if (resetBtn) {
-    resetBtn.onclick = () => {
+  const tokenBtn = document.getElementById('wb-token-reset');
+  if (tokenBtn) {
+    tokenBtn.onclick = () => {
       try { localStorage.removeItem(GH_TOKEN_KEY); } catch (e) { /* ignore */ }
       askToken(() => { initDB(); });
     };
