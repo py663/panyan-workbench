@@ -4,11 +4,11 @@
    冲突时不静默覆盖，让用户选择保留哪一份。
    未配置或连接失败时自动退回纯本机模式，页面照常可用。
 */
-const SYNC_MODULES = ['words', 'tasks', 'courses', 'videos', 'inbox', 'notes', 'finance', 'links', 'settings', 'stats'];
+const SYNC_MODULES = ['words', 'tasks', 'courses', 'videos', 'inbox', 'notes', 'finance', 'links', 'settings', 'stats', 'trash', 'backups'];
 const MODULE_NAMES = {
   words: '考研单词', tasks: '任务', courses: '课程表', videos: '视频库',
   inbox: '收集箱', notes: '笔记', finance: '记账', links: '常用链接',
-  settings: '设置', stats: '统计'
+  settings: '设置', stats: '统计', trash: '回收站', backups: '备份'
 };
 
 const SNAPSHOT = {};
