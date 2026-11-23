@@ -78,6 +78,7 @@ async function ghRequest(url, options = {}) {
     method: options.method || 'GET',
     headers,
     body: options.body,
+    cache: 'no-store',
     signal: AbortSignal.timeout(15000)
   });
   if (!res.ok) {
@@ -97,8 +98,10 @@ async function ghRequest(url, options = {}) {
 /* 读取云端整份数据。文件不存在返回 null */
 async function ghRead() {
   let file;
+  // 加随机参数绕开 GitHub/CDN 的 60 秒缓存，保证跨设备刷新读到最新数据
+  const cacheBust = '&_t=' + Date.now();
   try {
-    file = await ghRequest(ghContentsUrl() + '?ref=' + encodeURIComponent(GH_BRANCH));
+    file = await ghRequest(ghContentsUrl() + '?ref=' + encodeURIComponent(GH_BRANCH) + cacheBust);
   } catch (e) {
     if (e.status === 404) return null;
     throw e;
