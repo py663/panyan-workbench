@@ -320,7 +320,7 @@
     }
     var list = DB.trash.map(function (t) {
       var when = new Date(t.deletedAt).toLocaleString('zh-CN');
-      var label = t.item.w || t.item.title || t.item.name || t.item.url || t.item.q || '(无标题)';
+      var label = t.item.content || t.item.w || t.item.title || t.item.name || t.item.url || t.item.q || t.item.text || '(无标题)';
       return '<div style="padding:8px 0;border-bottom:1px dashed var(--border-paper-light)">' +
         '<div><b>' + esc(moduleLabel(t.module)) + '</b> · ' + esc(String(label).slice(0, 40)) + '</div>' +
         '<div style="font-size:12px;color:var(--ink-sub)">删除于 ' + esc(when) + '</div>' +
