@@ -25,3 +25,13 @@ window.DEFAULT_GITHUB_CONFIG = {
   path: 'workbench-data.json',
   accountName: '潘琰工作台'
 };
+
+/* ============ 联网搜索代理（腾讯云函数）============
+   部署云函数后，把生成的函数 URL 填到 proxyUrl，
+   视频搜索和新闻热点就能自动抓取。留空时这两个功能给出提示。
+   函数 URL：https://1539620899-eak8s2wajf.ap-guangzhou.tencentscf.com
+   注意：结尾不要带 /，不要带 /api/xxx 后缀，只填根地址。
+*/
+window.DEFAULT_PROXY_CONFIG = {
+  proxyUrl: 'https://1539620899-eak8s2wajf.ap-guangzhou.tencentscf.com'
+};

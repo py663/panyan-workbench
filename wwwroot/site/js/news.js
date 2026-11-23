@@ -10,15 +10,20 @@ async function fetchNews() {
   if (newsCache.data && Date.now() - newsCache.ts < NEWS_CACHE_TTL) {
     return newsCache.data;
   }
-  if (location.hostname.endsWith('.github.io')) {
-    throw new Error('GitHub Pages 静态版不支持热点抓取（需要服务端代理）');
+  var cfg = window.DEFAULT_PROXY_CONFIG;
+  var proxy = (cfg && cfg.proxyUrl ? String(cfg.proxyUrl) : '').replace(/\/+$/, '');
+  var url;
+  if (proxy) {
+    url = proxy + '/api/news';
+  } else if (location.hostname.endsWith('.github.io') || location.protocol === 'file:') {
+    throw new Error('新闻热点未配置：请先在 config.js 填入云函数地址（proxyUrl）');
+  } else {
+    url = '/api/news';
   }
-  if (location.protocol === 'file:') {
-    throw new Error('请通过本地服务器打开工作台后再加载新闻');
-  }
-  const res = await fetch('/api/news', { signal: AbortSignal.timeout(25000) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(25000) });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || `新闻服务错误 ${res.status}`);
+  if (json.error) throw new Error(json.error);
+  if (!res.ok) throw new Error(`新闻服务错误 ${res.status}`);
   const items = (json.items || []).filter(it => it.title && it.link).map(it => ({
     title: it.title,
     link: it.link,

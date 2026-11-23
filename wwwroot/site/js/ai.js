@@ -55,14 +55,27 @@ async function callAI(prompt, system = "你是一个大学生学习助手，回�
   }
 }
 
-/* AI 功能：学习视频推荐（需要服务端搜索代理） */
+/* 获取联网搜索代理地址（腾讯云函数，用户可在配置里填） */
+function getProxyBase() {
+  var cfg = window.DEFAULT_PROXY_CONFIG;
+  return (cfg && cfg.proxyUrl ? String(cfg.proxyUrl) : '').replace(/\/+$/, '');
+}
+
+/* AI 功能：学习视频推荐（走腾讯云函数代理，或本地服务端） */
 async function aiRecommendVideos(keyword) {
-  if (isStaticPages()) {
-    throw new Error('GitHub Pages 静态版不支持服务器视频搜索，请在视频库手动添加');
+  var proxy = getProxyBase();
+  var url;
+  if (proxy) {
+    url = proxy + '/api/video-search?q=' + encodeURIComponent(keyword);
+  } else if (!isStaticPages() && location.protocol !== 'file:') {
+    url = '/api/video-search?q=' + encodeURIComponent(keyword);
+  } else {
+    throw new Error('视频搜索未配置：请先在 config.js 填入云函数地址（proxyUrl），再在视频库搜索');
   }
-  const resp = await fetch(`/api/video-search?q=${encodeURIComponent(keyword)}`);
-  const data = await resp.json();
-  if (!resp.ok) throw new Error(data.error || '真实视频搜索失败，请稍后重试');
+  const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
+  const data = await resp.json().catch(() => ({}));
+  if (data.error) throw new Error(data.error);
+  if (!resp.ok) throw new Error('真实视频搜索失败 ' + resp.status + '，请稍后重试');
   return (data.items || []).map(v => ({
     title: String(v.title || '').trim(),
     teacher: String(v.teacher || '').trim(),
