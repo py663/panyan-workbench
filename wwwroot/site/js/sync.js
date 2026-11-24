@@ -23,8 +23,11 @@ let FILE_SHA = null;          // 云端文件的 sha，作为乐观锁凭据
 let LAST_SAVED = null;
 let SERVER_READY = false;
 let LOCAL_ONLY = true;
-let flushTimer = null;
+let CLOUD_SLOW = false;      // 云端暂时慢/不可达，页面用本机缓存照常工作
+let flushTimer = null;       // 自动保存的防抖定时器
+let retryTimer = null;       // 后台重连定时器
 let flushing = false;
+const RETRY_MS = 30000;      // 云端慢时每 30 秒自动重试一次
 
 const GH = window.DEFAULT_GITHUB_CONFIG || {};
 const GH_OWNER = String(GH.owner || '').trim();
@@ -134,8 +137,141 @@ async function proxyRequest(path, payload) {
   return out;
 }
 
+/* ============================================================
+   词库瘦身：词条本体走静态词书（只下载一次并缓存），
+   云端只保存"有学习进度/自定义"的词条（通常几十条）。
+   这样工作数据文件从 ~1.3MB 降到几 KB，同步秒级完成。
+   页面内存里的 DB.words 始终是全量，背单词功能完全不受影响。
+   ============================================================ */
+const WORDBOOK_URL = 'data/kaoyan.json';
+let WORDBOOK = null;
+
+function wordKeyOf(x) { return String((x && x.w) || '').trim().toLowerCase(); }
+
+/* 词书只加载一次；带日期参数 + 强缓存，后续打开直接走浏览器缓存 */
+async function ensureWordbook() {
+  if (WORDBOOK && WORDBOOK.length) return WORDBOOK;
+  try {
+    const res = await fetch(WORDBOOK_URL + '?v=' + Math.floor(Date.now() / 86400000), { cache: 'force-cache' });
+    if (res.ok) {
+      const arr = await res.json();
+      if (Array.isArray(arr) && arr.length) WORDBOOK = arr;
+    }
+  } catch (e) { console.warn('词书加载失败，将用本机缓存还原词库：', e); }
+  return WORDBOOK;
+}
+
+function bookKeySet() {
+  const set = new Set();
+  if (WORDBOOK) WORDBOOK.forEach(it => set.add(wordKeyOf(it)));
+  return set;
+}
+
+function baseWordFromBook(it) {
+  return {
+    id: 'wb_' + wordKeyOf(it),
+    w: it.w || '', p: it.p || '', m: it.m || '', e: '',
+    status: 'new', ease: 2.5, interval: 0, reps: 0,
+    nextReview: 0, addedAt: 0, reviewHistory: []
+  };
+}
+
+/* 判断一条词是否"有状态需要单独保存" */
+function isProgressWord(x, keys) {
+  if (!x || typeof x !== 'object') return false;
+  if (!keys.has(wordKeyOf(x))) return true;              // 词书之外的自定义词
+  if (x.status && x.status !== 'new') return true;
+  if ((x.reps || 0) > 0 || (x.interval || 0) > 0) return true;
+  if (String(x.e || '').trim()) return true;
+  if ((x.reviewHistory || []).length) return true;
+  return false;
+}
+
+/* 压缩：完整词库 -> 只保留有进度的词条。词书加载失败则原样返回，绝不丢数据 */
+function packWordList(words) {
+  if (!Array.isArray(words)) return words;
+  if (!WORDBOOK || !WORDBOOK.length) return words;
+  const keys = bookKeySet();
+  return words.filter(x => isProgressWord(x, keys));
+}
+
+/* 还原：词书基础词条 + 云端进度 -> 完整词库 */
+function expandWordList(compact, fallbackFull) {
+  if (!Array.isArray(compact)) return compact;
+  const local = Array.isArray(fallbackFull) ? fallbackFull : [];
+  // 本机已有的词条按 w 建索引：还原时优先沿用它们的 id/addedAt，做到老设备零变化
+  const localByKey = new Map();
+  local.forEach(x => { if (x && x.w) localByKey.set(wordKeyOf(x), x); });
+  const book = (WORDBOOK && WORDBOOK.length) ? WORDBOOK : null;
+  if (!book && !local.length) return compact;   // 既没词书也没本机词库：保持原样，不猜测
+
+  const out = [];
+  const pos = new Map();
+  // 基础顺序：优先本机已有词库的顺序，其次词书顺序
+  const baseList = local.length ? local : (book || []);
+  baseList.forEach(it => {
+    const k = wordKeyOf(it);
+    if (k && !pos.has(k)) {
+      pos.set(k, out.length);
+      const b = baseWordFromBook(it);
+      // 本机有这条：保留它的 id / addedAt / nextReview / e 等原字段
+      if (localByKey.has(k)) {
+        const L = localByKey.get(k);
+        Object.assign(b, { id: L.id || b.id, addedAt: L.addedAt || 0, nextReview: L.nextReview || 0, e: L.e || '' });
+      }
+      out.push(b);
+    }
+  });
+  // 词书里还有、但本机词库缺失的词条：补进来（新设备首次打开的场景）
+  if (book && book.length < 10000) {
+    book.forEach(it => {
+      const k = wordKeyOf(it);
+      if (k && !pos.has(k)) { pos.set(k, out.length); out.push(baseWordFromBook(it)); }
+    });
+  }
+  // 云端进度覆盖：有学习状态的词整条替换，保证进度逐条无损
+  compact.forEach(cw => {
+    if (!cw || typeof cw !== 'object') return;
+    const k = wordKeyOf(cw);
+    if (pos.has(k)) out[pos.get(k)] = cw;
+    else { pos.set(k, out.length); out.push(cw); }
+  });
+  return out;
+}
+
+/* 上传前压缩整份数据（含历史备份里的词库），不改内存里的 DB */
+function packDB(data) {
+  if (!data || typeof data !== 'object') return data;
+  const out = Object.assign({}, data);
+  out.__compactWords = true;
+  out.words = packWordList(data.words);
+  if (Array.isArray(data.backups)) {
+    out.backups = data.backups.map(b => {
+      if (!b || !b.data) return b;
+      return Object.assign({}, b, { data: Object.assign({}, b.data, { words: packWordList(b.data.words) }) });
+    });
+  }
+  return out;
+}
+
+/* 下载后还原整份数据；旧格式（无标记）原样使用，保证向后兼容 */
+function unpackDB(data) {
+  if (!data || typeof data !== 'object') return data;
+  if (!data.__compactWords) return data;
+  const out = Object.assign({}, data);
+  out.words = expandWordList(data.words, DB && DB.words);
+  if (Array.isArray(data.backups)) {
+    out.backups = data.backups.map(b => {
+      if (!b || !b.data) return b;
+      return Object.assign({}, b, { data: Object.assign({}, b.data, { words: expandWordList(b.data.words, DB && DB.words) }) });
+    });
+  }
+  return out;
+}
+
 /* 读取云端整份数据。文件不存在返回 null */
 async function ghRead() {
+  await ensureWordbook();
   if (USE_PROXY) {
     const out = await proxyRequest('/api/data-get');
     if (out.ok === false) {
@@ -144,7 +280,10 @@ async function ghRead() {
       throw error;
     }
     if (out.notFound) return null;
-    return { sha: out.sha, data: out.data };
+    // legacy=true 表示云端还是旧的大词库格式，需要一次迁移重写
+    const legacy = !!(out.data && !out.data.__compactWords);
+    // stale=true 表示云函数读到的是缓存快照（GitHub 暂时慢），数据仍可用
+    return { sha: out.sha, data: unpackDB(out.data), stale: !!out.stale, cachedAt: out.cachedAt, legacy: legacy };
   }
   // 直连回退
   let file;
@@ -164,13 +303,16 @@ async function ghRead() {
   } else {
     return null;
   }
-  return { sha: file.sha, data: payload.data || payload };
+  const rawData = payload.data || payload;
+  const legacy = !!(rawData && !rawData.__compactWords);
+  return { sha: file.sha, data: unpackDB(rawData), legacy: legacy };
 }
 
 /* 写入云端整份数据。首次创建不带 sha，更新必须带 sha（乐观锁） */
 async function ghWrite(data, sha) {
+  const wire = packDB(data);   // 词库瘦身后再上传，云端文件保持几 KB
   if (USE_PROXY) {
-    const out = await proxyRequest('/api/data-save', { data: data, sha: sha || null });
+    const out = await proxyRequest('/api/data-save', { data: wire, sha: sha || null });
     if (out.ok === false) {
       if (out.conflict) {
         const error = new Error('云端已被其他设备修改');
@@ -187,7 +329,7 @@ async function ghWrite(data, sha) {
   // 直连回退
   const body = {
     message: '工作台自动同步 ' + new Date().toISOString(),
-    content: utf8ToBase64(JSON.stringify({ data: data, updatedAt: new Date().toISOString() })),
+    content: utf8ToBase64(JSON.stringify({ data: wire, updatedAt: new Date().toISOString() })),
     branch: GH_BRANCH
   };
   if (sha) body.sha = sha;
@@ -284,40 +426,65 @@ async function initDB() {
   try {
     const remote = await ghRead();
     if (remote && remote.data) {
-      // 云端有数据：以云端为准
+      // 云端有数据：以云端为准（这是多设备场景的正确语义）
       applyRemoteData(remote.data);
       FILE_SHA = remote.sha;
+      if (remote.stale) {
+        // 云函数返回的是缓存快照（GitHub 暂时慢）：数据照常用，提示"慢"，后台重试
+        CLOUD_SLOW = true;
+        updateStatus('slow');
+        scheduleRetry();
+      } else {
+        CLOUD_SLOW = false;
+        updateStatus('saved');
+      }
+      // 旧的大词库文件：本机已还原成全量词库，用精简格式重写一次，之后同步都是几 KB
+      if (remote.legacy && WORDBOOK && WORDBOOK.length) {
+        try {
+          FILE_SHA = await ghWrite(DB, FILE_SHA);
+          console.log('已把云端词库升级为精简格式');
+        } catch (e) {
+          console.warn('词库精简迁移暂未成功，下次会自动重试：', e);
+        }
+      }
     } else {
       // 云端还没文件：把本机数据作为第一版上传
       SYNC_MODULES.forEach(m => { if (DB[m] === undefined) DB[m] = defaults[m]; });
       DB.settings = Object.assign({}, defaults.settings, DB.settings || {});
       DB.stats = Object.assign({}, defaults.stats, DB.stats || {});
       FILE_SHA = await ghWrite(DB, null);
+      CLOUD_SLOW = false;
       if (typeof toast === 'function') toast('已在云端创建数据文件', 'success');
+      updateStatus('saved');
     }
     snapshotAll();
     saveLocal();
     SERVER_READY = true;
     LOCAL_ONLY = false;
     LAST_SAVED = new Date();
-    updateStatus('saved');
   } catch (e) {
     console.warn('云同步连接失败，使用本机数据：', e);
     SERVER_READY = false;
     LOCAL_ONLY = true;
     // 代理模式：401/403 表示应用密码不对或云函数没配 token，提示检查配置
     if (USE_PROXY && (e.status === 401 || e.status === 403)) {
+      CLOUD_SLOW = false;
       updateStatus('error');
       return;
     }
     // 直连模式：token 失效/权限不足，清掉旧 token 让下次重新输入
     if (!USE_PROXY && (e.status === 401 || e.status === 403)) {
       try { localStorage.removeItem(GH_TOKEN_KEY); } catch (err) { /* ignore */ }
+      CLOUD_SLOW = false;
       updateStatus('error');
       askToken(() => { initDB(); });
       return;
     }
-    updateStatus('offline');
+    // 其他失败（网络/超时）：不再显示吓人的"离线"，改为"云端慢，用本机缓存"，
+    // 保持本机可编辑，并在后台定时重试，恢复后自动补同步。
+    CLOUD_SLOW = true;
+    updateStatus('slow');
+    scheduleRetry();
   }
 }
 
@@ -357,17 +524,76 @@ async function flush() {
           DIRTY.clear();
           break;
         }
-        // 其他失败：重新标记变化，保留本机，稍后重试
+        // 其他失败（云端慢/网络）：重新标记变化、保留本机数据，稍后自动重试
         SYNC_MODULES.forEach(m => {
           if (JSON.stringify(DB[m] ?? null) !== SNAPSHOT[m]) DIRTY.add(m);
         });
-        updateStatus('offline');
-        console.warn('同步失败，稍后重试：', e);
+        CLOUD_SLOW = true;
+        updateStatus('slow');
+        scheduleRetry();
+        console.warn('同步失败，稍后自动重试：', e);
         break;
       }
     }
   } finally {
     flushing = false;
+  }
+}
+
+/* ---------- 后台定时重试：云端慢时用本机缓存照常工作，恢复后自动补同步 ---------- */
+function scheduleRetry() {
+  if (retryTimer) return;               // 已经有一个在等，不重复排
+  retryTimer = setTimeout(backgroundRetry, RETRY_MS);
+}
+
+async function backgroundRetry() {
+  retryTimer = null;
+  if (!CLOUD_SLOW) return;              // 已被其他流程恢复
+  if (!navigator.onLine) {              // 真断网：等真正联网事件再试
+    updateStatus('offline');
+    return;
+  }
+  try {
+    const remote = await ghRead();
+    if (remote && remote.data && !remote.stale) {
+      // 云端恢复了：先判断本机在慢速期间有没有攒下未推送的改动
+      let localDirty = DIRTY.size > 0;
+      SYNC_MODULES.forEach(m => {
+        if (JSON.stringify(DB[m] ?? null) !== SNAPSHOT[m]) localDirty = true;
+      });
+      CLOUD_SLOW = false;
+      SERVER_READY = true;
+      LOCAL_ONLY = false;
+      FILE_SHA = remote.sha;
+      if (localDirty) {
+        // 本机有改动：以本机为准推上去，绝不覆盖用户的编辑（避免丢数据）
+        SYNC_MODULES.forEach(m => {
+          if (JSON.stringify(DB[m] ?? null) !== SNAPSHOT[m]) DIRTY.add(m);
+        });
+        updateStatus('saving');
+        scheduleFlush();
+        if (typeof toast === 'function') toast('云端已恢复，正在上传本机改动', 'success');
+      } else {
+        // 本机干净：用云端最新数据刷新本机
+        applyRemoteData(remote.data);
+        snapshotAll();
+        saveLocal();
+        LAST_SAVED = new Date();
+        updateStatus('saved');
+        if (typeof toast === 'function') toast('云端已恢复，数据已同步', 'success');
+        if (typeof renderCurrent === 'function') renderCurrent();
+      }
+    } else {
+      // 还是慢（仍返回 stale 或没数据）：继续等下一轮
+      scheduleRetry();
+    }
+  } catch (e) {
+    if (e.status === 401 || e.status === 403) {
+      CLOUD_SLOW = false;
+      updateStatus('error');
+      return;
+    }
+    scheduleRetry();
   }
 }
 
@@ -444,6 +670,9 @@ function updateStatus(state) {
   } else if (state === 'offline') {
     chip.textContent = '离线：已存本机，联网后重试';
     chip.style.color = '#8a5a33';
+  } else if (state === 'slow') {
+    chip.textContent = '云端响应慢，正在用本机缓存（会自动重试）';
+    chip.style.color = '#9a7b3f';
   } else if (state === 'error') {
     chip.textContent = USE_PROXY ? '云端连接失败，请检查云函数配置' : '同步失败，请检查配置';
     chip.style.color = '#8a3d33';
@@ -451,6 +680,12 @@ function updateStatus(state) {
 }
 
 window.addEventListener('online', () => {
+  if (CLOUD_SLOW) {
+    // 云端慢的兜底状态：联网后立即重试一次，不等 30 秒
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    backgroundRetry();
+    return;
+  }
   if (SERVER_READY) {
     SYNC_MODULES.forEach(m => {
       if (JSON.stringify(DB[m] ?? null) !== SNAPSHOT[m]) DIRTY.add(m);
@@ -459,7 +694,9 @@ window.addEventListener('online', () => {
     else updateStatus('saved');
   }
 });
-window.addEventListener('offline', () => { if (!LOCAL_ONLY) updateStatus('offline'); });
+window.addEventListener('offline', () => {
+  if (!LOCAL_ONLY) { CLOUD_SLOW = true; updateStatus('offline'); }
+});
 
 /* ---------- 设置页：账号与同步状态 ---------- */
 function injectAccountCard() {
@@ -472,6 +709,8 @@ function injectAccountCard() {
   card.style.marginBottom = 'var(--space-md)';
   const repoLabel = GH_OWNER && GH_REPO ? (GH_OWNER + '/' + GH_REPO) : '未配置';
   const channelText = USE_PROXY ? '云函数中转（打开无需令牌）' : '浏览器直连 GitHub';
+  const cloudState = CLOUD_SLOW ? '云端响应慢（用本机缓存，后台自动重试）'
+    : (SERVER_READY ? '已连接' : (ghConfigured() ? '未连接' : '未配置'));
   const tokenRow = USE_PROXY
     ? '<p>访问令牌：<b style="color:#3d6b4a">不需要（令牌只在云函数里）</b></p>'
     : '<p>访问令牌：' + (hasToken() ? '已在本机保存' : '未填写') + '</p>';
@@ -485,7 +724,7 @@ function injectAccountCard() {
     <p>数据位置：${LOCAL_ONLY ? '当前浏览器（未连接云端）' : 'GitHub 仓库（免费）'}</p>
     ${tokenRow}
     <p>最近保存：${LAST_SAVED ? LAST_SAVED.toLocaleString('zh-CN') : '尚未保存'}</p>
-    <p>云端状态：${SERVER_READY ? '已连接' : (ghConfigured() ? '未连接' : '未配置')}</p>
+    <p>云端状态：${cloudState}</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn-primary" id="wb-sync-now" type="button">立即同步</button>
       ${resetBtn}
@@ -495,6 +734,14 @@ function injectAccountCard() {
   const syncBtn = document.getElementById('wb-sync-now');
   if (syncBtn) {
     syncBtn.onclick = () => {
+      if (CLOUD_SLOW) {
+        // 云端慢：立即重试一次（不用等 30 秒），本机改动会在恢复后自动推送
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        updateStatus('saving');
+        backgroundRetry();
+        if (typeof toast === 'function') toast('正在重新连接云端…');
+        return;
+      }
       if (!SERVER_READY) {
         if (!USE_PROXY && !hasToken()) { askToken(() => { initDB(); }); return; }
         if (typeof toast === 'function') toast('云端未连接，请稍后重试或刷新页面');
