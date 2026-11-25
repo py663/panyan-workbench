@@ -100,9 +100,6 @@ function renderSidebar() {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.onclick = () => {
       const route = el.dataset.route;
-      // 今日总览与课程表由 ASP.NET 服务端渲染
-      if (route === 'today') { location.href = '/Dashboard'; return; }
-      if (route === 'homework') { location.href = '/Dashboard/Timetable'; return; }
       navigate(route);
     };
   });
@@ -187,8 +184,6 @@ function openMoreDrawer() {
       const sub = el.dataset.sub;
       const route = el.dataset.route;
       closeDrawer();
-      if (route === 'today') { location.href = '/Dashboard'; return; }
-      if (route === 'homework') { location.href = '/Dashboard/Timetable'; return; }
       navigate(route);
       setTimeout(() => {
         if (sub === 'help') showHelpTab();
