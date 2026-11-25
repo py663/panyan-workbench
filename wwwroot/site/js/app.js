@@ -40,7 +40,7 @@ function modal(html, buttons = []) {
 }
 
 // ---------- 路由 ----------
-const ROUTES = ['today','words','code','homework','plan','videos','finance','news','inbox','search','ai','settings'];
+const ROUTES = ['today','words','code','homework','plan','videos','links','finance','news','inbox','search','ai','settings'];
 
 function currentRoute() {
   const h = location.hash.replace('#/', '') || 'today';
